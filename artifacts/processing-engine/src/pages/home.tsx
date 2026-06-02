@@ -1,16 +1,19 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { format, addDays } from "date-fns";
+import { format, addDays, startOfDay } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { Activity, Clock, ShieldAlert } from "lucide-react";
+import { Activity, Clock, ShieldAlert, ChevronLeft, ChevronRight } from "lucide-react";
 import { 
   useGetFixtures, 
   getGetFixturesQueryKey,
   useHealthCheck 
 } from "@workspace/api-client-react";
 
+const TODAY = startOfDay(new Date());
+
 export default function Home() {
-  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [selectedDate, setSelectedDate] = useState<Date>(TODAY);
+  const [windowOffset, setWindowOffset] = useState(0);
   const queryClient = useQueryClient();
 
   const formattedDate = format(selectedDate, "yyyy-MM-dd");
@@ -30,14 +33,24 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [formattedDate, queryClient]);
 
-  // Date Strip (3 before, today, 3 after)
+  // Date strip: 7 days centered on the window offset
   const dates = useMemo(() => {
+    const center = windowOffset;
     const arr = [];
-    for (let i = -3; i <= 3; i++) {
-      arr.push(addDays(new Date(), i));
+    for (let i = center - 3; i <= center + 3; i++) {
+      arr.push(addDays(TODAY, i));
     }
     return arr;
-  }, []);
+  }, [windowOffset]);
+
+  // When selected date is outside visible window, re-center
+  const handleDateSelect = (date: Date) => {
+    setSelectedDate(date);
+    const diff = Math.round((startOfDay(date).getTime() - TODAY.getTime()) / 86400000);
+    if (diff < windowOffset - 3 || diff > windowOffset + 3) {
+      setWindowOffset(diff);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col font-sans overflow-x-hidden selection:bg-primary selection:text-primary-foreground dark">
@@ -66,34 +79,72 @@ export default function Home() {
 
       {/* Date Navigation */}
       <div className="container mx-auto px-4 py-6">
-        <div className="flex items-center justify-start sm:justify-center gap-2 sm:gap-4 overflow-x-auto pb-2 scrollbar-none">
-          {dates.map((date) => {
-            const isSelected = format(date, "yyyy-MM-dd") === formattedDate;
-            const isToday = format(date, "yyyy-MM-dd") === format(new Date(), "yyyy-MM-dd");
-            return (
-              <button
-                key={date.toISOString()}
-                data-testid={`btn-date-${format(date, "yyyy-MM-dd")}`}
-                onClick={() => setSelectedDate(date)}
-                className={`flex flex-col items-center justify-center min-w-[70px] sm:min-w-[80px] p-2 border transition-all duration-300 font-mono text-sm uppercase flex-shrink-0 cursor-pointer ${
-                  isSelected 
-                    ? "border-primary bg-primary/10 text-primary shadow-[0_0_15px_rgba(0,255,255,0.2)]" 
-                    : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground bg-card/30"
-                }`}
-              >
-                <span className="text-[10px] mb-1 opacity-70">
-                  {isToday ? "TODAY" : format(date, "EEE")}
-                </span>
-                <span className={`text-lg font-bold ${isSelected ? "text-primary" : "text-foreground"}`}>
-                  {format(date, "dd")}
-                </span>
-                <span className="text-[10px] mt-1 opacity-70">
-                  {format(date, "MMM")}
-                </span>
-              </button>
-            );
-          })}
+        <div className="flex items-center justify-center gap-2">
+          {/* Prev week */}
+          <button
+            data-testid="btn-date-prev"
+            onClick={() => setWindowOffset(o => o - 7)}
+            className="flex-shrink-0 w-9 h-9 flex items-center justify-center border border-border text-muted-foreground hover:border-primary/60 hover:text-primary transition-all duration-200 bg-card/30 cursor-pointer"
+            aria-label="Previous week"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+
+          {/* Date buttons */}
+          <div className="flex items-center gap-2 sm:gap-3">
+            {dates.map((date) => {
+              const isSelected = format(date, "yyyy-MM-dd") === formattedDate;
+              const isToday = format(date, "yyyy-MM-dd") === format(TODAY, "yyyy-MM-dd");
+              return (
+                <button
+                  key={date.toISOString()}
+                  data-testid={`btn-date-${format(date, "yyyy-MM-dd")}`}
+                  onClick={() => handleDateSelect(date)}
+                  className={`flex flex-col items-center justify-center min-w-[60px] sm:min-w-[72px] p-2 border transition-all duration-300 font-mono text-sm uppercase flex-shrink-0 cursor-pointer ${
+                    isSelected
+                      ? "border-primary bg-primary/10 text-primary shadow-[0_0_15px_rgba(0,255,255,0.2)]"
+                      : isToday
+                      ? "border-primary/40 text-primary/70 bg-card/30 hover:border-primary/60 hover:text-primary"
+                      : "border-border text-muted-foreground hover:border-primary/50 hover:text-foreground bg-card/30"
+                  }`}
+                >
+                  <span className="text-[10px] mb-1 opacity-70">
+                    {isToday ? "TODAY" : format(date, "EEE")}
+                  </span>
+                  <span className={`text-lg font-bold ${isSelected ? "text-primary" : "text-foreground"}`}>
+                    {format(date, "dd")}
+                  </span>
+                  <span className="text-[10px] mt-1 opacity-70">
+                    {format(date, "MMM")}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Next week */}
+          <button
+            data-testid="btn-date-next"
+            onClick={() => setWindowOffset(o => o + 7)}
+            className="flex-shrink-0 w-9 h-9 flex items-center justify-center border border-border text-muted-foreground hover:border-primary/60 hover:text-primary transition-all duration-200 bg-card/30 cursor-pointer"
+            aria-label="Next week"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
         </div>
+
+        {/* Jump to today if off-screen */}
+        {windowOffset !== 0 && (
+          <div className="flex justify-center mt-3">
+            <button
+              data-testid="btn-date-today"
+              onClick={() => { setWindowOffset(0); handleDateSelect(TODAY); }}
+              className="text-[10px] font-mono uppercase tracking-widest text-primary/60 hover:text-primary border border-primary/20 hover:border-primary/50 px-3 py-1 transition-all duration-200 cursor-pointer"
+            >
+              Jump to Today
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Main Content */}

@@ -4,47 +4,30 @@ import type { FixturesResponse, LeagueGroup, Fixture, Team } from "@workspace/ap
 
 const router = Router();
 
-let cachedBuildId: string | null = null;
-let buildIdFetchedAt = 0;
-const BUILD_ID_CACHE_TTL = 5 * 60 * 1000;
-
-async function getBuildId(): Promise<string | null> {
-  const now = Date.now();
-  if (cachedBuildId && now - buildIdFetchedAt < BUILD_ID_CACHE_TTL) {
-    return cachedBuildId;
-  }
-
-  try {
-    const res = await fetch("https://www.statshub.com/", {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      },
-    });
-    const html = await res.text();
-    const match = html.match(/"buildId"\s*:\s*"([^"]+)"/);
-    if (match) {
-      cachedBuildId = match[1];
-      buildIdFetchedAt = now;
-      return cachedBuildId;
-    }
-  } catch {
-  }
-  return null;
-}
+const STATSHUB_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  Accept: "application/json, */*",
+  Referer: "https://www.statshub.com/",
+};
 
 function formatDate(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+function dateToUtcTimestamps(dateStr: string): { startOfDay: number; endOfDay: number } {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const startOfDay = Math.floor(Date.UTC(year, month - 1, day, 0, 0, 0) / 1000);
+  const endOfDay = Math.floor(Date.UTC(year, month - 1, day, 23, 59, 59) / 1000);
+  return { startOfDay, endOfDay };
 }
 
 function parseTeam(teamData: Record<string, unknown>): Team {
   return {
-    id: teamData.id as number,
+    id: (teamData.id as number) || 0,
     name: (teamData.name as string) || "",
     slug: (teamData.slug as string) || "",
     shortname: (teamData.shortname as string | null) ?? null,
@@ -102,42 +85,24 @@ function parseFixture(raw: RawEvent): Fixture {
 
 router.get("/fixtures", async (req, res) => {
   const queryResult = GetFixturesQueryParams.safeParse(req.query);
-  const date = queryResult.success && queryResult.data.date
-    ? queryResult.data.date
-    : formatDate(new Date());
+  const date =
+    queryResult.success && queryResult.data.date
+      ? queryResult.data.date
+      : formatDate(new Date());
 
   try {
-    const buildId = await getBuildId();
-    if (!buildId) {
-      res.status(500).json({ error: "Unable to retrieve StatsHub build ID" });
-      return;
-    }
+    const { startOfDay, endOfDay } = dateToUtcTimestamps(date);
+    const url = `https://www.statshub.com/api/event/by-date?startOfDay=${startOfDay}&endOfDay=${endOfDay}`;
 
-    const url = `https://www.statshub.com/_next/data/${buildId}/index.json?date=${date}`;
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "application/json, */*",
-        Referer: "https://www.statshub.com/",
-      },
-    });
+    const response = await fetch(url, { headers: STATSHUB_HEADERS });
 
     if (!response.ok) {
-      cachedBuildId = null;
       res.status(500).json({ error: `StatsHub returned ${response.status}` });
       return;
     }
 
-    const json = (await response.json()) as {
-      pageProps?: {
-        initialEvents?: {
-          data?: RawEvent[];
-        };
-      };
-    };
-
-    const rawEvents: RawEvent[] = json.pageProps?.initialEvents?.data ?? [];
+    const json = (await response.json()) as { data?: RawEvent[] };
+    const rawEvents: RawEvent[] = json.data ?? [];
 
     const fixturesByLeague = new Map<number, LeagueGroup>();
 
