@@ -8,6 +8,10 @@
 
 export * from './errorResponse';
 export * from './fixture';
+export * from './fixtureDetailResponse';
+export * from './fixtureDetailResponseAway';
+export * from './fixtureDetailResponseFixture';
+export * from './fixtureDetailResponseHome';
 export * from './fixturesResponse';
 export * from './getFixturesParams';
 export * from './healthStatus';

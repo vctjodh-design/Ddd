@@ -76,3 +76,18 @@ export const GetFixturesResponse = zod.object({
 })
 
 
+/**
+ * Returns player stats and team last-20-game stats for both teams in a fixture
+ * @summary Get fixture detail with player and team stats
+ */
+export const GetFixtureDetailParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const GetFixtureDetailResponse = zod.object({
+  "fixture": zod.record(zod.string(), zod.unknown()),
+  "home": zod.record(zod.string(), zod.unknown()),
+  "away": zod.record(zod.string(), zod.unknown())
+})
+
+

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { format, addDays, startOfDay } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
-import { Activity, Clock, ShieldAlert, ChevronLeft, ChevronRight } from "lucide-react";
+import { Activity, Clock, ShieldAlert, ChevronLeft, ChevronRight, ChevronRight as ArrowRight } from "lucide-react";
 import { 
   useGetFixtures, 
   getGetFixturesQueryKey,
@@ -17,6 +18,8 @@ export default function Home() {
   const queryClient = useQueryClient();
 
   const formattedDate = format(selectedDate, "yyyy-MM-dd");
+
+  const [, navigate] = useLocation();
 
   const { data: fixturesResponse, isLoading, isError } = useGetFixtures(
     { date: formattedDate },
@@ -211,7 +214,8 @@ export default function Home() {
                         <div 
                           key={fixture.id}
                           data-testid={`fixture-${fixture.id}`}
-                          className={`p-4 flex items-center justify-between transition-colors hover:bg-white/[0.02] ${isFinished || isPostponed || isCancelled ? "opacity-60" : ""} ${isLive ? "bg-primary/5" : ""}`}
+                          onClick={() => navigate(`/fixture/${fixture.id}`)}
+                          className={`p-4 flex items-center justify-between transition-colors hover:bg-white/[0.03] cursor-pointer group ${isFinished || isPostponed || isCancelled ? "opacity-60" : ""} ${isLive ? "bg-primary/5" : ""}`}
                         >
                           {/* Home Team */}
                           <div className={`flex-1 flex items-center justify-end gap-3 text-right ${homeWinner ? "font-bold text-foreground" : awayWinner ? "text-muted-foreground" : "text-foreground/90"}`}>

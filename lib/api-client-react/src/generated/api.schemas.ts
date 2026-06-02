@@ -76,6 +76,18 @@ export interface FixturesResponse {
   leagues: LeagueGroup[];
 }
 
+export type FixtureDetailResponseFixture = { [key: string]: unknown };
+
+export type FixtureDetailResponseHome = { [key: string]: unknown };
+
+export type FixtureDetailResponseAway = { [key: string]: unknown };
+
+export interface FixtureDetailResponse {
+  fixture: FixtureDetailResponseFixture;
+  home: FixtureDetailResponseHome;
+  away: FixtureDetailResponseAway;
+}
+
 export type GetFixturesParams = {
 /**
  * Date in YYYY-MM-DD format. Defaults to today.
