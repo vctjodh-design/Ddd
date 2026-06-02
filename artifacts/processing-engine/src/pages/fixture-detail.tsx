@@ -2,79 +2,92 @@ import React, { useState, useRef } from "react";
 import { useParams, useLocation } from "wouter";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Activity, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, Activity, ChevronLeft, ChevronRight, Lock } from "lucide-react";
 import { useGetFixtureDetail } from "@workspace/api-client-react";
 
-// ─── Stat definitions ────────────────────────────────────────────────────────
+// ─── Team stat tab definitions (exact StatHub order) ─────────────────────────
 
-type StatKey =
-  | "goals" | "assists" | "goalOrAssist" | "shots" | "shotsOnTarget"
-  | "shotsOffTarget" | "blockedShots" | "xG" | "xA" | "xGxA"
-  | "bigChancesCreated" | "keyPasses" | "passes" | "accuratePasses"
-  | "crosses" | "accurateCrosses" | "longBalls" | "tackles" | "interceptions"
-  | "clearances" | "aerialWon" | "duelWon" | "saves" | "fouls" | "foulsWon"
-  | "foulInvolvements" | "yellowCard" | "redCard" | "offsides"
-  | "dispossessed" | "possessionLost" | "wonContest";
-
-// For team stats the key mapping is slightly different (yellowCards vs yellowCard)
-type TeamStatKey =
-  | "goals" | "assists" | "shots" | "shotsOnTarget" | "shotsOffTarget"
-  | "blockedShots" | "xG" | "xA" | "bigChancesCreated" | "keyPasses"
-  | "passes" | "accuratePasses" | "crosses" | "accurateCrosses" | "longBalls"
-  | "tackles" | "interceptions" | "clearances" | "aerialWon" | "duelWon"
-  | "saves" | "fouls" | "foulsWon" | "yellowCards" | "redCards" | "offsides"
-  | "dispossessed" | "possessionLost" | "wonContest";
-
-interface StatDef {
-  key: StatKey;
-  teamKey: TeamStatKey;
+interface TeamStatDef {
   label: string;
   short: string;
+  available: boolean;
   decimals: number;
-  group: string;
+  getValue?: (ts: TeamMatchStats, os: TeamMatchStats) => { ours: number; theirs: number };
 }
 
-const STATS: StatDef[] = [
-  // Attacking
-  { key: "goals",           teamKey: "goals",           label: "Goals",           short: "G",    decimals: 0, group: "Attack" },
-  { key: "assists",         teamKey: "assists",          label: "Assists",          short: "A",    decimals: 0, group: "Attack" },
-  { key: "goalOrAssist",    teamKey: "goals",            label: "G + A",            short: "G+A",  decimals: 0, group: "Attack" },
-  { key: "shots",           teamKey: "shots",            label: "Shots",            short: "Sh",   decimals: 0, group: "Attack" },
-  { key: "shotsOnTarget",   teamKey: "shotsOnTarget",    label: "Shots On Target",  short: "SoT",  decimals: 0, group: "Attack" },
-  { key: "shotsOffTarget",  teamKey: "shotsOffTarget",   label: "Shots Off Target", short: "SoFF", decimals: 0, group: "Attack" },
-  { key: "blockedShots",    teamKey: "blockedShots",     label: "Blocked Shots",    short: "BlSh", decimals: 0, group: "Attack" },
-  { key: "xG",              teamKey: "xG",               label: "xG",               short: "xG",   decimals: 2, group: "Attack" },
-  { key: "xA",              teamKey: "xA",               label: "xA",               short: "xA",   decimals: 2, group: "Attack" },
-  { key: "xGxA",            teamKey: "goals",            label: "xG + xA",          short: "xG+A", decimals: 2, group: "Attack" },
-  { key: "bigChancesCreated", teamKey: "bigChancesCreated", label: "Big Chances Created", short: "BC", decimals: 0, group: "Attack" },
-  { key: "keyPasses",       teamKey: "keyPasses",        label: "Key Passes",       short: "KP",   decimals: 0, group: "Attack" },
-  // Passing
-  { key: "passes",          teamKey: "passes",           label: "Passes",           short: "Pas",  decimals: 0, group: "Passing" },
-  { key: "accuratePasses",  teamKey: "accuratePasses",   label: "Accurate Passes",  short: "APas", decimals: 0, group: "Passing" },
-  { key: "crosses",         teamKey: "crosses",          label: "Crosses",          short: "Cr",   decimals: 0, group: "Passing" },
-  { key: "accurateCrosses", teamKey: "accurateCrosses",  label: "Accurate Crosses", short: "ACr",  decimals: 0, group: "Passing" },
-  { key: "longBalls",       teamKey: "longBalls",        label: "Long Balls",       short: "LB",   decimals: 0, group: "Passing" },
-  // Defending
-  { key: "tackles",         teamKey: "tackles",          label: "Tackles",          short: "Tck",  decimals: 0, group: "Defense" },
-  { key: "interceptions",   teamKey: "interceptions",    label: "Interceptions",    short: "Int",  decimals: 0, group: "Defense" },
-  { key: "clearances",      teamKey: "clearances",       label: "Clearances",       short: "Clr",  decimals: 0, group: "Defense" },
-  { key: "aerialWon",       teamKey: "aerialWon",        label: "Aerial Won",       short: "Aer",  decimals: 0, group: "Defense" },
-  { key: "duelWon",         teamKey: "duelWon",          label: "Duel Won",         short: "DW",   decimals: 0, group: "Defense" },
-  { key: "saves",           teamKey: "saves",            label: "Saves",            short: "Sav",  decimals: 0, group: "Defense" },
-  // Discipline
-  { key: "fouls",           teamKey: "fouls",            label: "Fouls Committed",  short: "Fls",  decimals: 0, group: "Discipline" },
-  { key: "foulsWon",        teamKey: "foulsWon",         label: "Fouls Won",        short: "FW",   decimals: 0, group: "Discipline" },
-  { key: "foulInvolvements",teamKey: "fouls",            label: "Foul Involvements",short: "FI",   decimals: 0, group: "Discipline" },
-  { key: "yellowCard",      teamKey: "yellowCards",      label: "Yellow Cards",     short: "YC",   decimals: 0, group: "Discipline" },
-  { key: "redCard",         teamKey: "redCards",         label: "Red Cards",        short: "RC",   decimals: 0, group: "Discipline" },
-  { key: "offsides",        teamKey: "offsides",         label: "Offsides",         short: "Off",  decimals: 0, group: "Discipline" },
-  // Other
-  { key: "dispossessed",    teamKey: "dispossessed",     label: "Dispossessed",     short: "Dis",  decimals: 0, group: "Other" },
-  { key: "possessionLost",  teamKey: "possessionLost",   label: "Possession Lost",  short: "PL",   decimals: 0, group: "Other" },
-  { key: "wonContest",      teamKey: "wonContest",       label: "Won Contest",      short: "WC",   decimals: 0, group: "Other" },
+const TEAM_STAT_TABS: TeamStatDef[] = [
+  { label: "Goals",                  short: "Gls",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.goals,             theirs: os.goals })           },
+  { label: "Corners",                short: "Cor",  available: false, decimals: 0 },
+  { label: "Shots",                  short: "Sh",   available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.shots,             theirs: os.shots })           },
+  { label: "Cards",                  short: "Crd",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.yellowCards+ts.redCards, theirs: os.yellowCards+os.redCards }) },
+  { label: "Crosses",                short: "Cr",   available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.crosses,           theirs: os.crosses })         },
+  { label: "Big Chance Created",     short: "BCC",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.bigChancesCreated, theirs: os.bigChancesCreated }) },
+  { label: "Big Chance Missed",      short: "BCM",  available: false, decimals: 0 },
+  { label: "Big Chance Scored",      short: "BCS",  available: false, decimals: 0 },
+  { label: "Expected Goals",         short: "xG",   available: true,  decimals: 2, getValue: (ts,os) => ({ ours: ts.xG,               theirs: os.xG })              },
+  { label: "Shots On Goal",          short: "SoG",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.shotsOnTarget,    theirs: os.shotsOnTarget })   },
+  { label: "Shots Off Goal",         short: "SoFF", available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.shotsOffTarget,   theirs: os.shotsOffTarget })  },
+  { label: "Shots Inside Box",       short: "SIB",  available: false, decimals: 0 },
+  { label: "Shots Outside Box",      short: "SOB",  available: false, decimals: 0 },
+  { label: "Total Clearance",        short: "Clr",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.clearances,       theirs: os.clearances })      },
+  { label: "Dispossessed",           short: "Dis",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.dispossessed,     theirs: os.dispossessed })    },
+  { label: "Errors Lead To Goal",    short: "ELG",  available: false, decimals: 0 },
+  { label: "Errors Lead To Shot",    short: "ELS",  available: false, decimals: 0 },
+  { label: "Fouls",                  short: "Fls",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.fouls,            theirs: os.fouls })           },
+  { label: "Goalkeeper Saves",       short: "Sav",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.saves,            theirs: os.saves })           },
+  { label: "Interception Won",       short: "Int",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.interceptions,    theirs: os.interceptions })   },
+  { label: "Tackles",                short: "Tck",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.tackles,          theirs: os.tackles })         },
+  { label: "Free Kicks",             short: "FK",   available: false, decimals: 0 },
+  { label: "Goal Kicks",             short: "GK",   available: false, decimals: 0 },
+  { label: "Throw Ins",              short: "TI",   available: false, decimals: 0 },
+  { label: "Possession",             short: "Pos",  available: false, decimals: 1 },
+  { label: "Offsides",               short: "Off",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.offsides,         theirs: os.offsides })        },
+  { label: "Passes",                 short: "Pas",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.passes,           theirs: os.passes })          },
+  { label: "Touches In Opp Box",     short: "TOB",  available: false, decimals: 0 },
+  { label: "Red Cards",              short: "RC",   available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.redCards,          theirs: os.redCards })        },
+  { label: "Yellow Cards",           short: "YC",   available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.yellowCards,       theirs: os.yellowCards })     },
 ];
 
-const STAT_GROUPS = ["Attack", "Passing", "Defense", "Discipline", "Other"];
+// ─── Player stat tab definitions (exact StatHub order) ───────────────────────
+
+interface PlayerStatDef {
+  label: string;
+  short: string;
+  available: boolean;
+  beta?: boolean;
+  decimals: number;
+  getValue?: (ms: PlayerMatchStats) => number;
+  getTotal?: (all: (PlayerMatchStats | null)[]) => number;
+}
+
+const PLAYER_STAT_TABS: PlayerStatDef[] = [
+  { label: "Shots Outside the Box",            short: "SOB",  available: false, beta: true,  decimals: 0 },
+  { label: "Shots On Target Outside the Box",  short: "STOB", available: false, beta: true,  decimals: 0 },
+  { label: "Headed Shot",                      short: "HS",   available: false, beta: true,  decimals: 0 },
+  { label: "Headed Shot On Target",            short: "HST",  available: false, beta: true,  decimals: 0 },
+  { label: "First Half Shots",                 short: "FHS",  available: false, beta: true,  decimals: 0 },
+  { label: "First Half Shots On Target",       short: "FHST", available: false, beta: true,  decimals: 0 },
+  { label: "Fouls Committed",   short: "FC",   available: true, decimals: 0, getValue: ms => ms.fouls },
+  { label: "Fouls Won",         short: "FW",   available: true, decimals: 0, getValue: ms => ms.foulsWon },
+  { label: "Tackles",           short: "Tck",  available: true, decimals: 0, getValue: ms => ms.tackles },
+  { label: "Shots",             short: "Sh",   available: true, decimals: 0, getValue: ms => ms.shots },
+  { label: "Shots on Target",   short: "SoT",  available: true, decimals: 0, getValue: ms => ms.shotsOnTarget },
+  { label: "Foul Involvements", short: "FI",   available: true, decimals: 0, getValue: ms => ms.foulInvolvements },
+  { label: "Goals",             short: "G",    available: true, decimals: 0, getValue: ms => ms.goals },
+  { label: "Assists",           short: "A",    available: true, decimals: 0, getValue: ms => ms.assists },
+  { label: "Scored OR Assisted",short: "G+A",  available: true, decimals: 0, getValue: ms => ms.goalOrAssist },
+  { label: "Expected Goals (xG)", short: "xG", available: true, decimals: 2, getValue: ms => ms.xG },
+  { label: "Expected Assists (xA)", short: "xA", available: true, decimals: 2, getValue: ms => ms.xA },
+  { label: "XG + XA",           short: "xG+A", available: true, decimals: 2, getValue: ms => ms.xGxA },
+  { label: "Passes",            short: "Pas",  available: true, decimals: 0, getValue: ms => ms.passes },
+  { label: "Crosses",           short: "Cr",   available: true, decimals: 0, getValue: ms => ms.crosses },
+  { label: "Possession Lost",   short: "PL",   available: true, decimals: 0, getValue: ms => ms.possessionLost },
+  { label: "Dispossessed",      short: "Dis",  available: true, decimals: 0, getValue: ms => ms.dispossessed },
+  { label: "Interceptions Won", short: "Int",  available: true, decimals: 0, getValue: ms => ms.interceptions },
+  { label: "Yellow Cards",      short: "YC",   available: true, decimals: 0, getValue: ms => ms.yellowCard ? 1 : 0 },
+  { label: "Offsides",          short: "Off",  available: true, decimals: 0, getValue: ms => ms.offsides },
+  { label: "Saves",             short: "Sav",  available: true, decimals: 0, getValue: ms => ms.saves },
+];
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -82,7 +95,8 @@ interface PlayerMatchStats {
   minutesPlayed: number; isSubstitute: boolean;
   goals: number; assists: number; goalOrAssist: number;
   shots: number; shotsOnTarget: number; shotsOffTarget: number; blockedShots: number;
-  passes: number; accuratePasses: number; crosses: number; accurateCrosses: number; longBalls: number; accurateLongBalls: number;
+  passes: number; accuratePasses: number; crosses: number; accurateCrosses: number;
+  longBalls: number; accurateLongBalls: number;
   tackles: number; interceptions: number; fouls: number; foulsWon: number; foulInvolvements: number;
   yellowCard: boolean; redCard: boolean; saves: number;
   xG: number; xA: number; xGxA: number; bigChancesCreated: number; keyPasses: number;
@@ -114,25 +128,7 @@ interface Player {
 
 interface TeamData { matches: Match[]; players: Player[]; matchDates: number[]; }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function fmtVal(v: number | boolean | null | undefined, dec: number): string {
-  if (v === null || v === undefined) return "-";
-  if (typeof v === "boolean") return v ? "1" : "0";
-  if (dec === 0) return String(v);
-  return v.toFixed(dec);
-}
-
-function getPlayerVal(ms: PlayerMatchStats | null, key: StatKey): number {
-  if (!ms) return 0;
-  const v = ms[key as keyof PlayerMatchStats];
-  if (typeof v === "boolean") return v ? 1 : 0;
-  return (v as number) ?? 0;
-}
-
-function getTeamVal(ts: TeamMatchStats, key: TeamStatKey): number {
-  return (ts[key as keyof TeamMatchStats] as number) ?? 0;
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function resultColor(isHome: boolean, homeScore: number, awayScore: number) {
   const our = isHome ? homeScore : awayScore;
@@ -172,41 +168,38 @@ function FormBar({ matches }: { matches: Match[] }) {
   );
 }
 
-// ─── Stat Tab Bar ─────────────────────────────────────────────────────────────
+// ─── Generic Stat Tab Bar (works for both team and player tabs) ───────────────
 
-function StatTabBar({ selected, onSelect }: { selected: number; onSelect: (i: number) => void }) {
+interface TabDef { label: string; available: boolean; beta?: boolean }
+
+function StatTabBar<T extends TabDef>({
+  tabs, selected, onSelect,
+}: { tabs: T[]; selected: number; onSelect: (i: number) => void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  const scroll = (dir: -1 | 1) => {
-    scrollRef.current?.scrollBy({ left: dir * 200, behavior: "smooth" });
-  };
+  const scroll = (dir: -1 | 1) => scrollRef.current?.scrollBy({ left: dir * 200, behavior: "smooth" });
 
   return (
     <div className="relative flex items-center gap-1">
       <button onClick={() => scroll(-1)} className="flex-shrink-0 w-6 h-6 flex items-center justify-center text-muted-foreground hover:text-primary">
         <ChevronLeft className="w-4 h-4" />
       </button>
-      <div ref={scrollRef} className="flex gap-0 overflow-x-auto scrollbar-hide border-b border-border/50 flex-1" style={{ scrollbarWidth: "none" }}>
-        {STAT_GROUPS.map((group) => {
-          const groupStats = STATS.filter(s => s.group === group);
+      <div ref={scrollRef} className="flex gap-0 overflow-x-auto border-b border-border/50 flex-1" style={{ scrollbarWidth: "none" }}>
+        {tabs.map((tab, i) => {
+          const isActive = i === selected;
+          const isUnavail = !tab.available;
           return (
-            <div key={group} className="flex items-center flex-shrink-0">
-              <span className="text-[8px] font-mono uppercase text-muted-foreground/50 px-2 border-r border-border/30 whitespace-nowrap self-center">
-                {group}
-              </span>
-              {groupStats.map((stat, _) => {
-                const idx = STATS.indexOf(stat);
-                const isActive = idx === selected;
-                return (
-                  <button key={stat.key} onClick={() => onSelect(idx)}
-                    className={`px-3 py-2 text-[10px] font-mono uppercase tracking-wider whitespace-nowrap border-b-2 transition-all flex-shrink-0 ${
-                      isActive ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
-                    }`}>
-                    {stat.label}
-                  </button>
-                );
-              })}
-            </div>
+            <button key={i} onClick={() => onSelect(i)}
+              className={`px-3 py-2 text-[10px] font-mono uppercase tracking-wider whitespace-nowrap border-b-2 transition-all flex-shrink-0 flex items-center gap-1 ${
+                isActive
+                  ? "border-primary text-primary"
+                  : isUnavail
+                    ? "border-transparent text-muted-foreground/30 hover:text-muted-foreground/50"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}>
+              {isUnavail && <Lock className="w-2.5 h-2.5 opacity-50" />}
+              {tab.label}
+              {tab.beta && <span className="text-[7px] text-cyan-500/60 ml-0.5">β</span>}
+            </button>
           );
         })}
       </div>
@@ -217,25 +210,31 @@ function StatTabBar({ selected, onSelect }: { selected: number; onSelect: (i: nu
   );
 }
 
-// ─── Computed match stat values (handles derived stats like xG+xA) ────────────
+// ─── Unavailable stat placeholder ────────────────────────────────────────────
 
-function matchStatPair(m: Match, key: StatKey): { ours: number; theirs: number } {
-  if (key === "xGxA") return { ours: m.teamStats.xG + m.teamStats.xA, theirs: m.oppStats.xG + m.oppStats.xA };
-  if (key === "goalOrAssist") return { ours: m.teamStats.goals + m.teamStats.assists, theirs: m.oppStats.goals + m.oppStats.assists };
-  if (key === "foulInvolvements") return { ours: m.teamStats.fouls + m.teamStats.foulsWon, theirs: m.oppStats.fouls + m.oppStats.foulsWon };
-  const stat = STATS.find(s => s.key === key)!;
-  return { ours: getTeamVal(m.teamStats, stat.teamKey), theirs: getTeamVal(m.oppStats, stat.teamKey) };
+function UnavailableStat({ label, beta }: { label: string; beta?: boolean }) {
+  return (
+    <div className="border border-dashed border-border/30 p-8 text-center space-y-2">
+      <Lock className="w-5 h-5 text-muted-foreground/30 mx-auto" />
+      <p className="text-sm font-mono text-muted-foreground/50">{label}</p>
+      <p className="text-[10px] text-muted-foreground/30 max-w-xs mx-auto">
+        {beta
+          ? "This is a Beta stat — not yet available in the StatHub lineup data endpoint."
+          : "This stat (corners, possession, shots inside/outside box, etc.) is not included in the StatHub last-games API response. Only player-derived stats are available."}
+      </p>
+    </div>
+  );
 }
 
 // ─── Team Match Table ─────────────────────────────────────────────────────────
 
-function TeamMatchTable({ data, statIdx, color }: { data: TeamData; statIdx: number; color: string | null }) {
-  const stat = STATS[statIdx];
-  const sorted = [...data.matches].sort((a, b) => b.date - a.date);
+function TeamMatchTable({ data, tabIdx, color }: { data: TeamData; tabIdx: number; color: string | null }) {
+  const tab = TEAM_STAT_TABS[tabIdx];
+  if (!tab.available || !tab.getValue) return <UnavailableStat label={tab.label} />;
 
-  // Compute max value for color scale
-  const vals = sorted.map(m => matchStatPair(m, stat.key).ours);
-  const maxVal = Math.max(...vals, 1);
+  const sorted = [...data.matches].sort((a, b) => b.date - a.date);
+  const vals = sorted.map(m => tab.getValue!(m.teamStats, m.oppStats).ours);
+  const maxVal = Math.max(...vals, 0.01);
 
   return (
     <div className="border border-border/50 overflow-hidden">
@@ -243,9 +242,9 @@ function TeamMatchTable({ data, statIdx, color }: { data: TeamData; statIdx: num
         <table className="w-full text-xs font-mono">
           <thead>
             <tr className="bg-card border-b border-border/50">
-              <th className="text-left px-3 py-2 text-[9px] text-muted-foreground uppercase tracking-wider">Date</th>
+              <th className="text-left px-3 py-2 text-[9px] text-muted-foreground uppercase tracking-wider min-w-[70px]">Date</th>
               <th className="text-left px-3 py-2 text-[9px] text-muted-foreground uppercase tracking-wider">Match</th>
-              <th className="text-center px-3 py-2 text-[9px] uppercase tracking-wider" style={{ color: color || "#00ffff" }}>
+              <th className="text-center px-3 py-2 text-[9px] uppercase tracking-wider font-bold" style={{ color: color || "#00ffff" }}>
                 Ours
               </th>
               <th className="text-center px-3 py-2 text-[9px] text-muted-foreground uppercase tracking-wider">Theirs</th>
@@ -254,37 +253,33 @@ function TeamMatchTable({ data, statIdx, color }: { data: TeamData; statIdx: num
           </thead>
           <tbody className="divide-y divide-border/20">
             {sorted.map((m, i) => {
-              const { ours: ourVal, theirs: oppVal } = matchStatPair(m, stat.key);
-              const intensity = maxVal > 0 ? ourVal / maxVal : 0;
+              const { ours, theirs } = tab.getValue!(m.teamStats, m.oppStats);
+              const intensity = maxVal > 0 ? ours / maxVal : 0;
               return (
                 <motion.tr key={m.eventId}
-                  initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.025 }}
+                  initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.02 }}
                   className="hover:bg-white/[0.02]">
                   <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
                     {format(new Date(m.date * 1000), "dd MMM")}
                   </td>
-                  <td className="px-3 py-2 max-w-[180px]">
-                    <span className={m.isHome ? "text-primary/90" : "text-foreground/60"}>
-                      {m.homeTeamName}
-                    </span>
-                    <span className="text-muted-foreground mx-1 text-[10px]">
-                      {m.homeScore}-{m.awayScore}
-                    </span>
-                    <span className={!m.isHome ? "text-primary/90" : "text-foreground/60"}>
-                      {m.awayTeamName}
-                    </span>
+                  <td className="px-3 py-2">
+                    <div className="flex flex-wrap items-baseline gap-x-1">
+                      <span className={m.isHome ? "font-medium" : "text-foreground/60"}>{m.homeTeamName}</span>
+                      <span className="text-muted-foreground text-[10px]">{m.homeScore}-{m.awayScore}</span>
+                      <span className={!m.isHome ? "font-medium" : "text-foreground/60"}>{m.awayTeamName}</span>
+                    </div>
                     {m.tournamentName && (
-                      <div className="text-[9px] text-muted-foreground/50 truncate max-w-[160px]">{m.tournamentName}</div>
+                      <div className="text-[9px] text-muted-foreground/40 truncate max-w-[200px]">{m.tournamentName}</div>
                     )}
                   </td>
                   <td className="px-3 py-2 text-center">
                     <span className="font-bold text-sm"
-                      style={{ color: `rgba(${intensity > 0.5 ? "0,255,200" : "180,180,200"},${0.5 + intensity * 0.5})` }}>
-                      {stat.decimals > 0 ? ourVal.toFixed(stat.decimals) : ourVal}
+                      style={{ color: `rgba(${intensity > 0.5 ? "0,255,200" : "180,180,200"},${0.45 + intensity * 0.55})` }}>
+                      {tab.decimals > 0 ? ours.toFixed(tab.decimals) : ours}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-center text-muted-foreground">
-                    {stat.decimals > 0 ? oppVal.toFixed(stat.decimals) : oppVal}
+                    {tab.decimals > 0 ? theirs.toFixed(tab.decimals) : theirs}
                   </td>
                   <td className="px-2 py-2 text-center">
                     <ResultBadge isHome={m.isHome} homeScore={m.homeScore} awayScore={m.awayScore} />
@@ -301,24 +296,26 @@ function TeamMatchTable({ data, statIdx, color }: { data: TeamData; statIdx: num
 
 // ─── Player Match Matrix ──────────────────────────────────────────────────────
 
-function PlayerMatchMatrix({ data, statIdx }: { data: TeamData; statIdx: number }) {
-  const stat = STATS[statIdx];
-  // Sort matches oldest→newest (match columns)
+function PlayerMatchMatrix({ data, tabIdx }: { data: TeamData; tabIdx: number }) {
+  const tab = PLAYER_STAT_TABS[tabIdx];
+  if (!tab.available || !tab.getValue) return <UnavailableStat label={tab.label} beta={tab.beta} />;
+
   const matches = [...data.matches].sort((a, b) => a.date - b.date);
   const n = matches.length;
+  const getVal = tab.getValue;
 
-  // Sort players by total for this stat (desc)
   const players = [...data.players]
-    .map(p => {
-      const total = p.matchStats.reduce((s, ms) => s + getPlayerVal(ms, stat.key), 0);
-      return { ...p, statTotal: total };
-    })
     .filter(p => p.appearances > 0)
-    .sort((a, b) => b.statTotal - a.statTotal);
+    .map(p => {
+      const vals = p.matchStats.map(ms => ms ? getVal(ms) : null);
+      const total = vals.reduce<number>((s, v) => s + (v ?? 0), 0);
+      return { ...p, vals, total };
+    })
+    .sort((a, b) => b.total - a.total);
 
-  // Max value for color scale
-  const allVals = players.flatMap(p => p.matchStats.map(ms => getPlayerVal(ms, stat.key)));
-  const maxVal = Math.max(...allVals, 1);
+  const allVals = players.flatMap(p => p.vals).filter((v): v is number => v !== null && v > 0);
+  const maxVal = Math.max(...allVals, 0.01);
+  const isCardStat = tab.short === "YC" || tab.short === "RC";
 
   return (
     <div className="border border-border/50 overflow-hidden">
@@ -329,18 +326,18 @@ function PlayerMatchMatrix({ data, statIdx }: { data: TeamData; statIdx: number 
               <th className="sticky left-0 z-20 bg-card px-3 py-2 text-left text-[9px] text-muted-foreground uppercase tracking-wider whitespace-nowrap min-w-[130px] border-r border-border/30">
                 Player
               </th>
-              <th className="px-2 py-2 text-center text-[9px] text-muted-foreground uppercase tracking-wider whitespace-nowrap border-r border-border/20">
+              <th className="px-2 py-2 text-center text-[9px] text-muted-foreground uppercase whitespace-nowrap border-r border-border/20 min-w-[36px]">
                 Apps
               </th>
-              {matches.map((m, i) => (
-                <th key={m.eventId} className="px-1.5 py-1 text-center whitespace-nowrap border-r border-border/10 min-w-[36px]">
-                  <div className="text-[8px] text-muted-foreground/70">{format(new Date(m.date * 1000), "MMM d")}</div>
+              {matches.map(m => (
+                <th key={m.eventId} className="px-1 py-1 text-center whitespace-nowrap border-r border-border/10 min-w-[34px]">
+                  <div className="text-[8px] text-muted-foreground/70">{format(new Date(m.date * 1000), "MMM\u00A0d")}</div>
                   <div className={`text-[8px] font-bold ${resultColor(m.isHome, m.homeScore, m.awayScore).split(" ")[0]}`}>
                     {m.isHome ? m.homeScore : m.awayScore}-{m.isHome ? m.awayScore : m.homeScore}
                   </div>
                 </th>
               ))}
-              <th className="px-2 py-2 text-center text-[9px] text-primary uppercase tracking-wider whitespace-nowrap sticky right-0 bg-card border-l border-border/30">
+              <th className="px-2 py-2 text-center text-[9px] text-primary uppercase whitespace-nowrap sticky right-0 bg-card border-l border-border/30">
                 TOT
               </th>
             </tr>
@@ -348,7 +345,7 @@ function PlayerMatchMatrix({ data, statIdx }: { data: TeamData; statIdx: number 
           <tbody className="divide-y divide-border/10">
             {players.map((p, pi) => (
               <motion.tr key={p.playerId}
-                initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: pi * 0.02 }}
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: pi * 0.015 }}
                 className="hover:bg-white/[0.02]">
                 <td className="sticky left-0 bg-background px-3 py-1.5 border-r border-border/30">
                   <div className="text-foreground/90 font-medium truncate max-w-[120px]">{p.name}</div>
@@ -356,29 +353,30 @@ function PlayerMatchMatrix({ data, statIdx }: { data: TeamData; statIdx: number 
                 </td>
                 <td className="px-2 py-1.5 text-center text-muted-foreground border-r border-border/20">{p.appearances}</td>
                 {Array.from({ length: n }, (_, i) => {
-                  const ms = p.matchStats[n - 1 - i]; // matches sorted newest first in matchStats
-                  const val = getPlayerVal(ms, stat.key);
-                  const bool = stat.key === "yellowCard" || stat.key === "redCard";
-                  const intensity = maxVal > 0 ? val / maxVal : 0;
+                  // matchStats are ordered newest-first; matches are sorted oldest-first
+                  const ms = p.matchStats[n - 1 - i];
+                  const val = ms ? getVal(ms) : null;
+                  const intensity = (val !== null && maxVal > 0) ? val / maxVal : 0;
                   return (
-                    <td key={i} className="px-1.5 py-1.5 text-center border-r border-border/10">
+                    <td key={i} className="px-1 py-1.5 text-center border-r border-border/10">
                       {ms === null ? (
-                        <span className="text-muted-foreground/30">·</span>
-                      ) : val === 0 ? (
-                        <span className="text-muted-foreground/40">0</span>
+                        <span className="text-muted-foreground/20">·</span>
+                      ) : val === 0 || val === null ? (
+                        <span className="text-muted-foreground/30">0</span>
                       ) : (
-                        <span className="font-bold"
-                          style={{ color: bool
-                            ? (stat.key === "yellowCard" ? "#fbbf24" : "#ef4444")
-                            : `rgba(0,${Math.round(180 + intensity * 75)},${Math.round(150 + intensity * 50)},${0.7 + intensity * 0.3})` }}>
-                          {bool ? (val ? "●" : "") : fmtVal(val, stat.decimals)}
+                        <span className="font-bold" style={{
+                          color: isCardStat
+                            ? (tab.short === "YC" ? "#fbbf24" : "#ef4444")
+                            : `rgba(0,${Math.round(185 + intensity * 70)},${Math.round(155 + intensity * 45)},${0.65 + intensity * 0.35})`
+                        }}>
+                          {isCardStat ? "●" : tab.decimals > 0 ? val.toFixed(tab.decimals) : val}
                         </span>
                       )}
                     </td>
                   );
                 })}
                 <td className="px-2 py-1.5 text-center font-bold text-primary sticky right-0 bg-background border-l border-border/30">
-                  {stat.decimals > 0 ? p.statTotal.toFixed(stat.decimals) : p.statTotal}
+                  {tab.decimals > 0 ? p.total.toFixed(tab.decimals) : p.total}
                 </td>
               </motion.tr>
             ))}
@@ -393,26 +391,26 @@ function PlayerMatchMatrix({ data, statIdx }: { data: TeamData; statIdx: number 
 
 function AvgCards({ data }: { data: TeamData }) {
   const n = data.matches.length || 1;
-  const avg = (key: TeamStatKey) => {
-    const total = data.matches.reduce((s, m) => s + getTeamVal(m.teamStats, key), 0);
+  const teamAvg = (key: keyof TeamMatchStats) => {
+    const total = data.matches.reduce((s, m) => s + ((m.teamStats[key] as number) ?? 0), 0);
     return (total / n).toFixed(1);
   };
   const cards = [
-    { label: "Goals/G",   val: avg("goals") },
-    { label: "Shots/G",   val: avg("shots") },
-    { label: "On Tgt/G",  val: avg("shotsOnTarget") },
-    { label: "Passes/G",  val: avg("passes") },
-    { label: "Tackles/G", val: avg("tackles") },
-    { label: "Yellow/G",  val: avg("yellowCards") },
-    { label: "Fouls/G",   val: avg("fouls") },
-    { label: "Int/G",     val: avg("interceptions") },
+    { label: "Goals/G",   val: teamAvg("goals") },
+    { label: "Shots/G",   val: teamAvg("shots") },
+    { label: "On Tgt/G",  val: teamAvg("shotsOnTarget") },
+    { label: "Passes/G",  val: teamAvg("passes") },
+    { label: "Tackles/G", val: teamAvg("tackles") },
+    { label: "Yellow/G",  val: teamAvg("yellowCards") },
+    { label: "Fouls/G",   val: teamAvg("fouls") },
+    { label: "Int/G",     val: teamAvg("interceptions") },
   ];
   return (
     <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
       {cards.map(c => (
         <div key={c.label} className="border border-border/40 bg-card/30 p-2 flex flex-col items-center gap-0.5">
           <div className="text-base font-mono font-bold text-foreground">{c.val}</div>
-          <div className="text-[8px] font-mono text-muted-foreground uppercase tracking-wide text-center">{c.label}</div>
+          <div className="text-[8px] font-mono text-muted-foreground uppercase tracking-wide text-center leading-tight">{c.label}</div>
         </div>
       ))}
     </div>
@@ -424,8 +422,16 @@ function AvgCards({ data }: { data: TeamData }) {
 type ViewMode = "team" | "players";
 
 function TeamPanel({ data, color }: { data: TeamData; color: string | null }) {
-  const [statIdx, setStatIdx] = useState(0);
+  const [teamTabIdx, setTeamTabIdx] = useState(0);
+  const [playerTabIdx, setPlayerTabIdx] = useState(12); // default to "Goals" in player list
   const [viewMode, setViewMode] = useState<ViewMode>("team");
+
+  const currentLabel = viewMode === "team"
+    ? TEAM_STAT_TABS[teamTabIdx].label
+    : PLAYER_STAT_TABS[playerTabIdx].label;
+  const isCurrentUnavail = viewMode === "team"
+    ? !TEAM_STAT_TABS[teamTabIdx].available
+    : !PLAYER_STAT_TABS[playerTabIdx].available;
 
   return (
     <div className="space-y-4">
@@ -441,8 +447,8 @@ function TeamPanel({ data, color }: { data: TeamData; color: string | null }) {
       <div className="flex gap-0 border border-border/50 w-fit">
         {(["team", "players"] as ViewMode[]).map(m => (
           <button key={m} onClick={() => setViewMode(m)}
-            className={`px-4 py-1.5 text-[10px] font-mono uppercase tracking-widest transition-all ${
-              viewMode === m ? "bg-primary/10 text-primary border-r border-primary/30" : "text-muted-foreground hover:text-foreground border-r border-border/30 last:border-r-0"
+            className={`px-4 py-1.5 text-[10px] font-mono uppercase tracking-widest transition-all border-r border-border/30 last:border-r-0 ${
+              viewMode === m ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground"
             }`}>
             {m === "team" ? "Team Stats" : "Player Stats"}
           </button>
@@ -450,23 +456,32 @@ function TeamPanel({ data, color }: { data: TeamData; color: string | null }) {
       </div>
 
       {/* Stat tab bar */}
-      <StatTabBar selected={statIdx} onSelect={setStatIdx} />
+      {viewMode === "team" ? (
+        <StatTabBar tabs={TEAM_STAT_TABS} selected={teamTabIdx} onSelect={setTeamTabIdx} />
+      ) : (
+        <StatTabBar tabs={PLAYER_STAT_TABS} selected={playerTabIdx} onSelect={setPlayerTabIdx} />
+      )}
 
       {/* Stat label */}
       <div className="flex items-center gap-2">
-        <span className="text-xs font-mono text-primary uppercase tracking-widest">{STATS[statIdx].label}</span>
-        <span className="text-[9px] font-mono text-muted-foreground">— {viewMode === "team" ? "per match" : "per player per match"}</span>
+        {isCurrentUnavail && <Lock className="w-3 h-3 text-muted-foreground/40" />}
+        <span className={`text-xs font-mono uppercase tracking-widest ${isCurrentUnavail ? "text-muted-foreground/40" : "text-primary"}`}>
+          {currentLabel}
+        </span>
+        <span className="text-[9px] font-mono text-muted-foreground">
+          — {viewMode === "team" ? "per match" : "per player per match"}
+        </span>
       </div>
 
       {/* Content */}
       <AnimatePresence mode="wait">
-        <motion.div key={`${viewMode}-${statIdx}`}
-          initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-          transition={{ duration: 0.15 }}>
+        <motion.div key={`${viewMode}-${viewMode === "team" ? teamTabIdx : playerTabIdx}`}
+          initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+          transition={{ duration: 0.12 }}>
           {viewMode === "team" ? (
-            <TeamMatchTable data={data} statIdx={statIdx} color={color} />
+            <TeamMatchTable data={data} tabIdx={teamTabIdx} color={color} />
           ) : (
-            <PlayerMatchMatrix data={data} statIdx={statIdx} />
+            <PlayerMatchMatrix data={data} tabIdx={playerTabIdx} />
           )}
         </motion.div>
       </AnimatePresence>
@@ -482,22 +497,21 @@ function ComparePanel({ home, away, fixture }: {
 }) {
   const hN = home.matches.length || 1;
   const aN = away.matches.length || 1;
+  const hAvg = (key: keyof TeamMatchStats) =>
+    home.matches.reduce((s, m) => s + ((m.teamStats[key] as number) ?? 0), 0) / hN;
+  const aAvg = (key: keyof TeamMatchStats) =>
+    away.matches.reduce((s, m) => s + ((m.teamStats[key] as number) ?? 0), 0) / aN;
 
-  const hAvg = (key: TeamStatKey) =>
-    home.matches.reduce((s, m) => s + getTeamVal(m.teamStats, key), 0) / hN;
-  const aAvg = (key: TeamStatKey) =>
-    away.matches.reduce((s, m) => s + getTeamVal(m.teamStats, key), 0) / aN;
-
-  const compareStats: { label: string; key: TeamStatKey; dec: number }[] = [
+  const compareStats: { label: string; key: keyof TeamMatchStats; dec: number }[] = [
     { label: "Goals",           key: "goals",           dec: 1 },
     { label: "Shots",           key: "shots",           dec: 1 },
     { label: "Shots on Target", key: "shotsOnTarget",   dec: 1 },
     { label: "xG",              key: "xG",              dec: 2 },
     { label: "xA",              key: "xA",              dec: 2 },
-    { label: "Passes",          key: "passes",          dec: 0 },
-    { label: "Acc. Passes",     key: "accuratePasses",  dec: 0 },
-    { label: "Crosses",         key: "crosses",         dec: 1 },
     { label: "Big Chances",     key: "bigChancesCreated", dec: 1 },
+    { label: "Passes",          key: "passes",          dec: 0 },
+    { label: "Accurate Passes", key: "accuratePasses",  dec: 0 },
+    { label: "Crosses",         key: "crosses",         dec: 1 },
     { label: "Tackles",         key: "tackles",         dec: 1 },
     { label: "Interceptions",   key: "interceptions",   dec: 1 },
     { label: "Clearances",      key: "clearances",      dec: 1 },
@@ -525,7 +539,7 @@ function ComparePanel({ home, away, fixture }: {
               <div className="text-right font-mono text-sm font-bold text-foreground">{s.dec === 0 ? Math.round(h) : h.toFixed(s.dec)}</div>
               <div className="flex flex-col gap-1">
                 <div className="text-[9px] text-center text-muted-foreground uppercase tracking-wider">{s.label}</div>
-                <div className="h-1.5 flex rounded-none overflow-hidden bg-muted/20">
+                <div className="h-1.5 flex overflow-hidden bg-muted/20">
                   <div className="h-full transition-all duration-500" style={{ width: `${hPct}%`, backgroundColor: fixture.homeTeam.colorPrimary || "#00ffff", opacity: 0.7 }} />
                   <div className="h-full transition-all duration-500" style={{ width: `${100 - hPct}%`, backgroundColor: fixture.awayTeam.colorPrimary || "#00ffff", opacity: 0.5 }} />
                 </div>
