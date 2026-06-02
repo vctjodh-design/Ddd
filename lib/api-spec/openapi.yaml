@@ -1,15 +1,16 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: Football Fixtures API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: fixtures
+    description: Football fixture operations
 paths:
   /healthz:
     get:
@@ -24,6 +25,32 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /fixtures:
+    get:
+      operationId: getFixtures
+      tags: [fixtures]
+      summary: Get fixtures for a date
+      description: Returns all football fixtures for a given date scraped from StatsHub
+      parameters:
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+            description: Date in YYYY-MM-DD format. Defaults to today.
+      responses:
+        "200":
+          description: List of fixtures grouped by league
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FixturesResponse"
+        "500":
+          description: Scraping error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +60,131 @@ components:
           type: string
       required:
         - status
-
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+    Team:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        slug:
+          type: string
+        shortname:
+          type: ["string", "null"]
+        colorPrimary:
+          type: ["string", "null"]
+        colorSecondary:
+          type: ["string", "null"]
+        isNational:
+          type: boolean
+      required:
+        - id
+        - name
+        - slug
+        - isNational
+    Fixture:
+      type: object
+      properties:
+        id:
+          type: integer
+        slug:
+          type: string
+        status:
+          type: string
+          description: "finished | notstarted | inprogress | postponed | cancelled"
+        homeTeam:
+          $ref: "#/components/schemas/Team"
+        awayTeam:
+          $ref: "#/components/schemas/Team"
+        homeScore:
+          type: ["integer", "null"]
+        awayScore:
+          type: ["integer", "null"]
+        kickoffTimestamp:
+          type: integer
+          description: Unix timestamp in seconds
+        roundInfo:
+          type: ["integer", "null"]
+        leagueId:
+          type: integer
+        leagueName:
+          type: string
+        leagueSlug:
+          type: string
+        leaguePrimaryColor:
+          type: ["string", "null"]
+        leagueSecondaryColor:
+          type: ["string", "null"]
+        countryName:
+          type: string
+        countrySlug:
+          type: string
+        countryFlag:
+          type: string
+        winnerCode:
+          type: ["integer", "null"]
+          description: "100 = home win, 200 = away win, 300 = draw"
+        hasHighlights:
+          type: boolean
+      required:
+        - id
+        - slug
+        - status
+        - homeTeam
+        - awayTeam
+        - kickoffTimestamp
+        - leagueId
+        - leagueName
+        - leagueSlug
+        - countryName
+        - countrySlug
+        - countryFlag
+        - hasHighlights
+    LeagueGroup:
+      type: object
+      properties:
+        leagueId:
+          type: integer
+        leagueName:
+          type: string
+        leagueSlug:
+          type: string
+        countryName:
+          type: string
+        countryFlag:
+          type: string
+        primaryColor:
+          type: ["string", "null"]
+        fixtures:
+          type: array
+          items:
+            $ref: "#/components/schemas/Fixture"
+      required:
+        - leagueId
+        - leagueName
+        - leagueSlug
+        - countryName
+        - countryFlag
+        - fixtures
+    FixturesResponse:
+      type: object
+      properties:
+        date:
+          type: string
+        totalFixtures:
+          type: integer
+        leagues:
+          type: array
+          items:
+            $ref: "#/components/schemas/LeagueGroup"
+      required:
+        - date
+        - totalFixtures
+        - leagues

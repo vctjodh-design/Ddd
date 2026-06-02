@@ -1,0 +1,20 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "v5-yMnUWPUyjO7rP3D6_Q"
+uri = "file://artifacts/processing-engine/src/assets/images/processor-core.png"
+type = "image"
+title = "Abstract glowing processor core"
+
+[[generated]]
+id = "zGrsQfOHVaSrMPbOjGP8e"
+uri = "file://artifacts/processing-engine/src/assets/images/topology-map.png"
+type = "image"
+title = "Futuristic global topology map"
+
+[[generated]]
+id = "SXgThJUQYebEoINMrbVww"
+uri = "file://artifacts/processing-engine/src/assets/images/data-stream.png"
+type = "image"
+title = "Data stream matrix visualization"

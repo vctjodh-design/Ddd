@@ -6,6 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
-}
+export type GetFixturesParams = {
+/**
+ * Date in YYYY-MM-DD format. Defaults to today.
+ */
+date?: string;
+};

@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Futuristic Processing Engine"
+version = "1.0.0"
+id = "artifacts/processing-engine"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23529
+
+[services.development]
+run = "pnpm --filter @workspace/processing-engine run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/processing-engine", "run", "build" ]
+publicDir = "artifacts/processing-engine/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23529"
+BASE_PATH = "/"

@@ -5,26 +5,7 @@
  * Football Fixtures API
  * OpenAPI spec version: 0.1.0
  */
-export interface HealthStatus {
-  status: string;
-}
-
-export interface ErrorResponse {
-  error: string;
-}
-
-export interface Team {
-  id: number;
-  name: string;
-  slug: string;
-  /** @nullable */
-  shortname?: string | null;
-  /** @nullable */
-  colorPrimary?: string | null;
-  /** @nullable */
-  colorSecondary?: string | null;
-  isNational: boolean;
-}
+import type { Team } from './team';
 
 export interface Fixture {
   id: number;
@@ -58,28 +39,3 @@ export interface Fixture {
   winnerCode?: number | null;
   hasHighlights: boolean;
 }
-
-export interface LeagueGroup {
-  leagueId: number;
-  leagueName: string;
-  leagueSlug: string;
-  countryName: string;
-  countryFlag: string;
-  /** @nullable */
-  primaryColor?: string | null;
-  fixtures: Fixture[];
-}
-
-export interface FixturesResponse {
-  date: string;
-  totalFixtures: number;
-  leagues: LeagueGroup[];
-}
-
-export type GetFixturesParams = {
-/**
- * Date in YYYY-MM-DD format. Defaults to today.
- */
-date?: string;
-};
-
