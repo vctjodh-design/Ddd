@@ -9,20 +9,27 @@ const STATSHUB_HEADERS = {
   Referer: "https://www.statshub.com/",
 };
 
-interface RawLineupPlayer {
+interface RawPlayer {
   playerId: number;
   name: string;
+  jerseyNo?: number;
   position?: string;
   minutesPlayed?: number;
+  substitutedIn?: number | null;
+  substitutedOut?: number | null;
   isSubstitute?: boolean;
   goals?: number;
   assists?: number;
+  shots?: number;
   onTargetScoringAttempt?: number;
   shotOffTarget?: number;
   blockedScoringAttempt?: number;
   totalPass?: number;
   accuratePass?: number;
   totalCross?: number;
+  accurateCross?: number;
+  totalLongBalls?: number;
+  accurateLongBalls?: number;
   totalTackle?: number;
   interceptionWon?: number;
   fouls?: number;
@@ -41,6 +48,7 @@ interface RawLineupPlayer {
   totalClearance?: number;
   keyPass?: number;
   bigChanceCreated?: number;
+  wonContest?: number;
 }
 
 interface RawGame {
@@ -56,86 +64,199 @@ interface RawGame {
   };
   homeTeam: { id: number; name: string };
   awayTeam: { id: number; name: string };
-  homeTeamLineup?: RawLineupPlayer[];
-  awayTeamLineup?: RawLineupPlayer[];
+  homeTeamLineup?: RawPlayer[];
+  awayTeamLineup?: RawPlayer[];
 }
 
-function aggregateLineup(lineup: RawLineupPlayer[]) {
-  return lineup.reduce(
+export interface PlayerMatchStats {
+  minutesPlayed: number;
+  isSubstitute: boolean;
+  goals: number;
+  assists: number;
+  goalOrAssist: number;
+  shots: number;
+  shotsOnTarget: number;
+  shotsOffTarget: number;
+  blockedShots: number;
+  passes: number;
+  accuratePasses: number;
+  crosses: number;
+  accurateCrosses: number;
+  longBalls: number;
+  accurateLongBalls: number;
+  tackles: number;
+  interceptions: number;
+  fouls: number;
+  foulsWon: number;
+  foulInvolvements: number;
+  yellowCard: boolean;
+  redCard: boolean;
+  saves: number;
+  xG: number;
+  xA: number;
+  xGxA: number;
+  bigChancesCreated: number;
+  keyPasses: number;
+  offsides: number;
+  dispossessed: number;
+  possessionLost: number;
+  clearances: number;
+  duelWon: number;
+  duelLost: number;
+  aerialWon: number;
+  wonContest: number;
+}
+
+export interface TeamMatchStats {
+  goals: number;
+  assists: number;
+  shots: number;
+  shotsOnTarget: number;
+  shotsOffTarget: number;
+  blockedShots: number;
+  passes: number;
+  accuratePasses: number;
+  crosses: number;
+  accurateCrosses: number;
+  longBalls: number;
+  accurateLongBalls: number;
+  tackles: number;
+  interceptions: number;
+  fouls: number;
+  foulsWon: number;
+  yellowCards: number;
+  redCards: number;
+  saves: number;
+  xG: number;
+  xA: number;
+  bigChancesCreated: number;
+  keyPasses: number;
+  offsides: number;
+  dispossessed: number;
+  possessionLost: number;
+  clearances: number;
+  duelWon: number;
+  duelLost: number;
+  aerialWon: number;
+  wonContest: number;
+}
+
+function parsePlayerStats(p: RawPlayer): PlayerMatchStats {
+  const shots =
+    (p.onTargetScoringAttempt ?? 0) +
+    (p.shotOffTarget ?? 0) +
+    (p.blockedScoringAttempt ?? 0);
+  const goals = p.goals ?? 0;
+  const assists = p.assists ?? 0;
+  const fouls = p.fouls ?? 0;
+  const foulsWon = p.wasFouled ?? 0;
+  const xG = parseFloat(p.expectedGoals ?? "0");
+  const xA = parseFloat(p.expectedAssists ?? "0");
+
+  return {
+    minutesPlayed: p.minutesPlayed ?? 0,
+    isSubstitute: p.isSubstitute ?? false,
+    goals,
+    assists,
+    goalOrAssist: goals + assists,
+    shots,
+    shotsOnTarget: p.onTargetScoringAttempt ?? 0,
+    shotsOffTarget: p.shotOffTarget ?? 0,
+    blockedShots: p.blockedScoringAttempt ?? 0,
+    passes: p.totalPass ?? 0,
+    accuratePasses: p.accuratePass ?? 0,
+    crosses: p.totalCross ?? 0,
+    accurateCrosses: p.accurateCross ?? 0,
+    longBalls: p.totalLongBalls ?? 0,
+    accurateLongBalls: p.accurateLongBalls ?? 0,
+    tackles: p.totalTackle ?? 0,
+    interceptions: p.interceptionWon ?? 0,
+    fouls,
+    foulsWon,
+    foulInvolvements: fouls + foulsWon,
+    yellowCard: p.yellowCard != null && p.yellowCard !== 0,
+    redCard: p.redCard != null && p.redCard !== 0,
+    saves: p.saves ?? 0,
+    xG,
+    xA,
+    xGxA: xG + xA,
+    bigChancesCreated: p.bigChanceCreated ?? 0,
+    keyPasses: p.keyPass ?? 0,
+    offsides: p.totalOffside ?? 0,
+    dispossessed: p.dispossessed ?? 0,
+    possessionLost: p.possessionLostCtrl ?? 0,
+    clearances: p.totalClearance ?? 0,
+    duelWon: p.duelWon ?? 0,
+    duelLost: p.duelLost ?? 0,
+    aerialWon: p.aerialWon ?? 0,
+    wonContest: p.wonContest ?? 0,
+  };
+}
+
+function aggregateTeamStats(lineup: RawPlayer[]): TeamMatchStats {
+  return lineup.reduce<TeamMatchStats>(
     (acc, p) => {
-      acc.goals += p.goals ?? 0;
-      acc.assists += p.assists ?? 0;
-      acc.shots +=
-        (p.onTargetScoringAttempt ?? 0) +
-        (p.shotOffTarget ?? 0) +
-        (p.blockedScoringAttempt ?? 0);
-      acc.shotsOnTarget += p.onTargetScoringAttempt ?? 0;
-      acc.shotsOffTarget += p.shotOffTarget ?? 0;
-      acc.blockedShots += p.blockedScoringAttempt ?? 0;
-      acc.passes += p.totalPass ?? 0;
-      acc.accuratePasses += p.accuratePass ?? 0;
-      acc.crosses += p.totalCross ?? 0;
-      acc.tackles += p.totalTackle ?? 0;
-      acc.interceptions += p.interceptionWon ?? 0;
-      acc.fouls += p.fouls ?? 0;
-      acc.foulsWon += p.wasFouled ?? 0;
-      acc.yellowCards += p.yellowCard != null ? 1 : 0;
-      acc.redCards += p.redCard != null ? 1 : 0;
-      acc.saves += p.saves ?? 0;
-      acc.xG += parseFloat(p.expectedGoals ?? "0");
-      acc.xA += parseFloat(p.expectedAssists ?? "0");
-      acc.bigChancesCreated += p.bigChanceCreated ?? 0;
-      acc.keyPasses += p.keyPass ?? 0;
-      acc.offsides += p.totalOffside ?? 0;
-      acc.dispossessed += p.dispossessed ?? 0;
-      acc.possessionLost += p.possessionLostCtrl ?? 0;
-      acc.clearances += p.totalClearance ?? 0;
-      acc.duelWon += p.duelWon ?? 0;
-      acc.duelLost += p.duelLost ?? 0;
-      acc.aerialWon += p.aerialWon ?? 0;
-      return acc;
+      const ps = parsePlayerStats(p);
+      return {
+        goals: acc.goals + ps.goals,
+        assists: acc.assists + ps.assists,
+        shots: acc.shots + ps.shots,
+        shotsOnTarget: acc.shotsOnTarget + ps.shotsOnTarget,
+        shotsOffTarget: acc.shotsOffTarget + ps.shotsOffTarget,
+        blockedShots: acc.blockedShots + ps.blockedShots,
+        passes: acc.passes + ps.passes,
+        accuratePasses: acc.accuratePasses + ps.accuratePasses,
+        crosses: acc.crosses + ps.crosses,
+        accurateCrosses: acc.accurateCrosses + ps.accurateCrosses,
+        longBalls: acc.longBalls + ps.longBalls,
+        accurateLongBalls: acc.accurateLongBalls + ps.accurateLongBalls,
+        tackles: acc.tackles + ps.tackles,
+        interceptions: acc.interceptions + ps.interceptions,
+        fouls: acc.fouls + ps.fouls,
+        foulsWon: acc.foulsWon + ps.foulsWon,
+        yellowCards: acc.yellowCards + (ps.yellowCard ? 1 : 0),
+        redCards: acc.redCards + (ps.redCard ? 1 : 0),
+        saves: acc.saves + ps.saves,
+        xG: acc.xG + ps.xG,
+        xA: acc.xA + ps.xA,
+        bigChancesCreated: acc.bigChancesCreated + ps.bigChancesCreated,
+        keyPasses: acc.keyPasses + ps.keyPasses,
+        offsides: acc.offsides + ps.offsides,
+        dispossessed: acc.dispossessed + ps.dispossessed,
+        possessionLost: acc.possessionLost + ps.possessionLost,
+        clearances: acc.clearances + ps.clearances,
+        duelWon: acc.duelWon + ps.duelWon,
+        duelLost: acc.duelLost + ps.duelLost,
+        aerialWon: acc.aerialWon + ps.aerialWon,
+        wonContest: acc.wonContest + ps.wonContest,
+      };
     },
     {
-      goals: 0,
-      assists: 0,
-      shots: 0,
-      shotsOnTarget: 0,
-      shotsOffTarget: 0,
-      blockedShots: 0,
-      passes: 0,
-      accuratePasses: 0,
-      crosses: 0,
-      tackles: 0,
-      interceptions: 0,
-      fouls: 0,
-      foulsWon: 0,
-      yellowCards: 0,
-      redCards: 0,
-      saves: 0,
-      xG: 0,
-      xA: 0,
-      bigChancesCreated: 0,
-      keyPasses: 0,
-      offsides: 0,
-      dispossessed: 0,
-      possessionLost: 0,
-      clearances: 0,
-      duelWon: 0,
-      duelLost: 0,
-      aerialWon: 0,
+      goals: 0, assists: 0, shots: 0, shotsOnTarget: 0, shotsOffTarget: 0,
+      blockedShots: 0, passes: 0, accuratePasses: 0, crosses: 0, accurateCrosses: 0,
+      longBalls: 0, accurateLongBalls: 0, tackles: 0, interceptions: 0, fouls: 0,
+      foulsWon: 0, yellowCards: 0, redCards: 0, saves: 0, xG: 0, xA: 0,
+      bigChancesCreated: 0, keyPasses: 0, offsides: 0, dispossessed: 0,
+      possessionLost: 0, clearances: 0, duelWon: 0, duelLost: 0, aerialWon: 0, wonContest: 0,
     }
   );
 }
 
 function processLastGames(games: RawGame[], teamId: number) {
   const sorted = [...games].sort(
-    (a, b) => a.events.timeStartTimestamp - b.events.timeStartTimestamp
+    (a, b) => b.events.timeStartTimestamp - a.events.timeStartTimestamp
   );
 
   const matchList: unknown[] = [];
   const playerMap = new Map<
     number,
-    { playerId: number; name: string; position: string; stats: (unknown | null)[] }
+    {
+      playerId: number;
+      name: string;
+      position: string;
+      jerseyNo: number;
+      matchStats: (PlayerMatchStats | null)[];
+    }
   >();
 
   sorted.forEach((game, matchIdx) => {
@@ -144,8 +265,8 @@ function processLastGames(games: RawGame[], teamId: number) {
     const ourLineup = (isHome ? game.homeTeamLineup : game.awayTeamLineup) ?? [];
     const oppLineup = (isHome ? game.awayTeamLineup : game.homeTeamLineup) ?? [];
 
-    const ourStats = aggregateLineup(ourLineup);
-    const oppStats = aggregateLineup(oppLineup);
+    const teamStats = aggregateTeamStats(ourLineup);
+    const oppStats = aggregateTeamStats(oppLineup);
 
     matchList.push({
       eventId: ev.id,
@@ -156,70 +277,42 @@ function processLastGames(games: RawGame[], teamId: number) {
       awayScore: ev.awayScoreCurrent ?? 0,
       tournamentName: ev.tournamentName ?? "",
       isHome,
-      stats: ourStats,
+      teamStats,
       oppStats,
     });
 
-    ourLineup.forEach((p: RawLineupPlayer) => {
+    ourLineup.forEach((p: RawPlayer) => {
       if (!playerMap.has(p.playerId)) {
         playerMap.set(p.playerId, {
           playerId: p.playerId,
           name: p.name,
           position: p.position ?? "",
-          stats: new Array(sorted.length).fill(null),
+          jerseyNo: p.jerseyNo ?? 0,
+          matchStats: new Array(sorted.length).fill(null),
         });
       }
-
-      playerMap.get(p.playerId)!.stats[matchIdx] = {
-        minutesPlayed: p.minutesPlayed ?? 0,
-        isSubstitute: p.isSubstitute ?? false,
-        goals: p.goals ?? 0,
-        assists: p.assists ?? 0,
-        shots:
-          (p.onTargetScoringAttempt ?? 0) +
-          (p.shotOffTarget ?? 0) +
-          (p.blockedScoringAttempt ?? 0),
-        shotsOnTarget: p.onTargetScoringAttempt ?? 0,
-        passes: p.totalPass ?? 0,
-        accuratePasses: p.accuratePass ?? 0,
-        crosses: p.totalCross ?? 0,
-        tackles: p.totalTackle ?? 0,
-        interceptions: p.interceptionWon ?? 0,
-        fouls: p.fouls ?? 0,
-        foulsWon: p.wasFouled ?? 0,
-        yellowCard: p.yellowCard != null,
-        redCard: p.redCard != null,
-        saves: p.saves ?? 0,
-        xG: parseFloat(p.expectedGoals ?? "0"),
-        xA: parseFloat(p.expectedAssists ?? "0"),
-        xGxA:
-          parseFloat(p.expectedGoals ?? "0") +
-          parseFloat(p.expectedAssists ?? "0"),
-        bigChancesCreated: p.bigChanceCreated ?? 0,
-        keyPasses: p.keyPass ?? 0,
-        offsides: p.totalOffside ?? 0,
-        dispossessed: p.dispossessed ?? 0,
-        possessionLost: p.possessionLostCtrl ?? 0,
-        aerialWon: p.aerialWon ?? 0,
-        duelWon: p.duelWon ?? 0,
-        clearances: p.totalClearance ?? 0,
-      };
+      playerMap.get(p.playerId)!.matchStats[matchIdx] = parsePlayerStats(p);
     });
   });
 
-  const players = Array.from(playerMap.values()).sort((a, b) => {
-    const aMin = a.stats.reduce(
-      (s, st) => s + (((st as { minutesPlayed?: number }) | null)?.minutesPlayed ?? 0),
-      0
-    );
-    const bMin = b.stats.reduce(
-      (s, st) => s + (((st as { minutesPlayed?: number }) | null)?.minutesPlayed ?? 0),
-      0
-    );
-    return bMin - aMin;
-  });
+  const players = Array.from(playerMap.values())
+    .map((player) => ({
+      ...player,
+      appearances: player.matchStats.filter(Boolean).length,
+    }))
+    .sort((a, b) => {
+      const aMin = a.matchStats.reduce(
+        (s, st) => s + (st?.minutesPlayed ?? 0),
+        0
+      );
+      const bMin = b.matchStats.reduce(
+        (s, st) => s + (st?.minutesPlayed ?? 0),
+        0
+      );
+      return bMin - aMin;
+    });
 
-  return { matches: matchList, players };
+  return { matches: matchList, players, matchDates: sorted.map(g => g.events.timeStartTimestamp) };
 }
 
 router.get("/fixture/:id", async (req, res) => {
