@@ -51,6 +51,38 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /fixture/{id}:
+    get:
+      operationId: getFixtureDetail
+      tags: [fixtures]
+      summary: Get fixture detail with player and team stats
+      description: Returns player stats and team last-20-game stats for both teams in a fixture
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            description: Fixture internal ID
+      responses:
+        "200":
+          description: Fixture detail with player and team stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FixtureDetailResponse"
+        "404":
+          description: Fixture not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -188,3 +220,19 @@ components:
         - date
         - totalFixtures
         - leagues
+    FixtureDetailResponse:
+      type: object
+      properties:
+        fixture:
+          type: object
+          additionalProperties: true
+        home:
+          type: object
+          additionalProperties: true
+        away:
+          type: object
+          additionalProperties: true
+      required:
+        - fixture
+        - home
+        - away
