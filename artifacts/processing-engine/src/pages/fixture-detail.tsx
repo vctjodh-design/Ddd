@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft, Activity, ChevronLeft, ChevronRight, Lock } from "lucide-react";
 import { useGetFixtureDetail } from "@workspace/api-client-react";
 import PlayerAnalysisPanel from "@/components/PlayerAnalysisPanel";
+import BettingOddsPanel from "@/components/BettingOddsPanel";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -878,7 +879,7 @@ function ComparePanel({ home, away, fixture }: {
 export default function FixtureDetail() {
   const { id } = useParams<{ id: string }>();
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"home" | "away" | "compare" | "analysis">("home");
+  const [activeTab, setActiveTab] = useState<"home" | "away" | "compare" | "analysis" | "odds">("home");
 
   const fixtureId = Number(id);
   const { data, isLoading, isError } = useGetFixtureDetail(fixtureId);
@@ -962,12 +963,12 @@ export default function FixtureDetail() {
           </motion.div>
 
           <div className="flex gap-0 border-b border-border/50 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
-            {(["home", "away", "compare", "analysis"] as const).map(tab => (
+            {(["home", "away", "compare", "analysis", "odds"] as const).map(tab => (
               <button key={tab} onClick={() => setActiveTab(tab)}
                 className={`px-4 py-2 text-xs font-mono uppercase tracking-widest border-b-2 transition-all -mb-px whitespace-nowrap flex-shrink-0 ${
                   activeTab === tab ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}>
-                {tab === "home" ? fixture.homeTeam.name : tab === "away" ? fixture.awayTeam.name : tab === "compare" ? "Compare" : "⚡ Analysis"}
+                {tab === "home" ? fixture.homeTeam.name : tab === "away" ? fixture.awayTeam.name : tab === "compare" ? "Compare" : tab === "analysis" ? "⚡ Analysis" : "📊 Odds"}
               </button>
             ))}
           </div>
@@ -988,6 +989,10 @@ export default function FixtureDetail() {
             ) : activeTab === "analysis" && home && away ? (
               <motion.div key="analysis" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <PlayerAnalysisPanel home={home} away={away} fixture={fixture} />
+              </motion.div>
+            ) : activeTab === "odds" && home && away ? (
+              <motion.div key="odds" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <BettingOddsPanel home={home} away={away} fixture={fixture} />
               </motion.div>
             ) : (
               <div className="flex items-center justify-center h-32">
