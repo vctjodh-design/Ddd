@@ -28,7 +28,7 @@ interface SHStatHistory {
 }
 
 interface PlayerMatchStats {
-  minutesPlayed: number; isSubstitute: boolean;
+  minutesPlayed: number; rating: number; matchPosition: string; isSubstitute: boolean;
   goals: number; assists: number; goalOrAssist: number;
   shots: number; shotsOnTarget: number; shotsOffTarget: number; blockedShots: number;
   passes: number; accuratePasses: number; crosses: number; accurateCrosses: number;
@@ -470,95 +470,163 @@ const POS_CONFIG: Array<{ pos: string; label: string; max: number }> = [
   { pos: "F", label: "FWD", max: 4 },
 ];
 
-function MiniBarChart({
-  values, globalMax, isCard, color,
-}: {
-  values: number[];
-  globalMax: number;
-  isCard?: boolean;
-  color: string | null;
-}) {
-  return (
-    <div className="flex items-end gap-[2px]" style={{ height: 32 }}>
-      {values.map((v, i) => {
-        const h = globalMax > 0 ? Math.max(2, (v / globalMax) * 32) : 2;
-        let bg: string;
-        if (isCard) {
-          bg = v > 0 ? "#fbbf24" : "#ffffff12";
-        } else if (v === 0) {
-          bg = "#ffffff12";
-        } else {
-          const t = globalMax > 0 ? v / globalMax : 0;
-          bg = color
-            ? `${color}${Math.round(80 + t * 160).toString(16).padStart(2, "0")}`
-            : `rgba(0,${Math.round(185 + t * 70)},${Math.round(155 + t * 45)},${0.45 + t * 0.55})`;
-        }
-        return (
-          <div key={i} className="flex-1 min-w-[5px] transition-all rounded-t-[1px]"
-            style={{ height: `${h}px`, backgroundColor: bg }} />
-        );
-      })}
-    </div>
-  );
-}
-
 function PlayerIntelCard({
-  player, statDef, totalMatches, globalMax, color,
+  player, statDef, totalMatches, globalMax, color, matches,
 }: {
   player: Player;
   statDef: typeof LINEUP_STATS[0];
   totalMatches: number;
   globalMax: number;
   color: string | null;
+  matches: Match[];
 }) {
-  // matchStats[0] = newest match; reverse to get oldest→newest for chart
-  const allStats = [...player.matchStats].reverse();
-  const playedStats = allStats.filter((ms): ms is PlayerMatchStats => ms !== null);
-  const vals = playedStats.map(ms => statDef.getValue(ms));
-  const avg = vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+  const [selectedBarIdx, setSelectedBarIdx] = useState<number | null>(null);
+
+  // matchStats[0]=newest; map with original index then reverse for oldest→newest display
+  const playedWithIdx = player.matchStats
+    .map((ms, originalIdx) => ({ ms, originalIdx }))
+    .filter((x): x is { ms: PlayerMatchStats; originalIdx: number } => x.ms !== null)
+    .reverse();
+
+  const vals = playedWithIdx.map(({ ms }) => statDef.getValue(ms));
+  const totalStat = vals.reduce((s, v) => s + v, 0);
+  const avgStat = vals.length > 0 ? totalStat / vals.length : 0;
+  const totalMins = playedWithIdx.reduce((s, { ms }) => s + ms.minutesPlayed, 0);
+  const avgMins = playedWithIdx.length > 0 ? totalMins / playedWithIdx.length : 0;
+  const p90 = totalMins > 0 ? (totalStat / totalMins) * 90 : 0;
+  const hitCount = vals.filter(v => v > 0).length;
+  const hitRate = vals.length > 0 ? Math.round((hitCount / vals.length) * 100) : 0;
   const startRate = Math.round((player.appearances / totalMatches) * 100);
 
+  const sel = selectedBarIdx !== null ? playedWithIdx[selectedBarIdx] : null;
+  const selMatch = sel ? matches[sel.originalIdx] : null;
+  const selVal = sel ? statDef.getValue(sel.ms) : null;
+
+  const barColor = (v: number) => {
+    if (statDef.isCard) return v > 0 ? "#fbbf24" : "#ffffff12";
+    if (v === 0) return "#ffffff12";
+    const t = globalMax > 0 ? v / globalMax : 0;
+    return color
+      ? `${color}${Math.round(80 + t * 160).toString(16).padStart(2, "0")}`
+      : `rgba(0,${Math.round(185 + t * 70)},${Math.round(155 + t * 45)},${0.45 + t * 0.55})`;
+  };
+
   return (
-    <div className="border border-border/30 bg-card/20 p-3 space-y-2 hover:border-border/60 transition-colors">
-      <div className="flex items-start justify-between gap-2">
+    <div className="border border-border/30 bg-card/20 transition-colors hover:border-border/50">
+      {/* Header */}
+      <div className="px-3 pt-3 pb-2 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[9px] font-mono text-muted-foreground/40 flex-shrink-0">
-            #{player.jerseyNo || "—"}
-          </span>
+          <span className="text-[9px] font-mono text-muted-foreground/35 flex-shrink-0">#{player.jerseyNo || "—"}</span>
           <div className="min-w-0">
             <div className="text-xs font-mono font-semibold text-foreground/90 truncate">{player.name}</div>
             <div className="flex items-center gap-1.5 mt-0.5">
-              <div className="text-[8px] font-mono text-muted-foreground/50 uppercase">
-                {player.appearances}/{totalMatches} apps
+              <span className="text-[8px] font-mono text-muted-foreground/45">{player.appearances}/{totalMatches} apps</span>
+              <div className="h-1 w-8 bg-muted/20 rounded-full overflow-hidden">
+                <div className="h-full rounded-full" style={{ width: `${startRate}%`, backgroundColor: color || "#00ffff", opacity: 0.55 }} />
               </div>
-              <div className="h-1 w-10 bg-muted/20 overflow-hidden rounded-full">
-                <div className="h-full rounded-full transition-all" style={{
-                  width: `${startRate}%`,
-                  backgroundColor: color || "#00ffff",
-                  opacity: 0.6,
-                }} />
-              </div>
-              <div className="text-[8px] font-mono text-muted-foreground/40">{startRate}%</div>
+              <span className="text-[8px] font-mono text-muted-foreground/35">{startRate}%</span>
             </div>
-          </div>
-        </div>
-        <div className="text-right flex-shrink-0">
-          <div className="text-xl font-mono font-bold" style={{ color: color || "#00ffff" }}>
-            {statDef.isCard ? (vals.reduce((s, v) => s + v, 0) || "0") : avg.toFixed(1)}
-          </div>
-          <div className="text-[8px] font-mono text-muted-foreground/40 uppercase">
-            {statDef.isCard ? "total" : "avg"}
           </div>
         </div>
       </div>
 
-      {vals.length > 0 ? (
-        <MiniBarChart values={vals} globalMax={globalMax} isCard={statDef.isCard} color={color} />
-      ) : (
-        <div className="h-8 flex items-center justify-center">
-          <span className="text-[9px] font-mono text-muted-foreground/25">no match data</span>
-        </div>
-      )}
+      {/* Summary stats: Graph Avg · Hit Rate · Avg Mins · P90 */}
+      <div className="grid grid-cols-4 border-t border-b border-border/20 divide-x divide-border/20">
+        {[
+          { label: "Graph Avg", val: statDef.isCard ? String(totalStat) : avgStat.toFixed(2), accent: true },
+          { label: "Hit Rate",  val: `${hitRate}% (${hitCount}/${vals.length})`, accent: false, red: hitRate === 0 },
+          { label: "Avg Mins",  val: avgMins.toFixed(1), accent: false },
+          { label: "P90",       val: p90.toFixed(2), accent: false },
+        ].map(c => (
+          <div key={c.label} className="px-2 py-1.5 text-center">
+            <div className={`text-[10px] font-mono font-bold leading-tight ${
+              c.accent ? "" : c.red ? "text-red-400/80" : "text-foreground/70"
+            }`} style={c.accent ? { color: color || "#00ffff" } : undefined}>
+              {c.val}
+            </div>
+            <div className="text-[7px] font-mono text-muted-foreground/35 uppercase tracking-wide mt-0.5">{c.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Bar chart */}
+      <div className="px-3 pt-2 pb-1">
+        {vals.length > 0 ? (
+          <div className="flex items-end gap-[2px]" style={{ height: 36 }}>
+            {playedWithIdx.map(({ ms, originalIdx }, barIdx) => {
+              const v = statDef.getValue(ms);
+              const h = globalMax > 0 ? Math.max(3, (v / globalMax) * 36) : 3;
+              const isSelected = selectedBarIdx === barIdx;
+              return (
+                <button
+                  key={originalIdx}
+                  onClick={() => setSelectedBarIdx(prev => prev === barIdx ? null : barIdx)}
+                  className="flex-1 min-w-[5px] rounded-t-[1px] transition-all"
+                  style={{
+                    height: `${h}px`,
+                    backgroundColor: barColor(v),
+                    opacity: selectedBarIdx !== null && !isSelected ? 0.3 : 1,
+                    outline: isSelected ? `1.5px solid ${color || "#00ffff"}` : "none",
+                    outlineOffset: "1px",
+                  }}
+                />
+              );
+            })}
+          </div>
+        ) : (
+          <div className="h-9 flex items-center justify-center">
+            <span className="text-[9px] font-mono text-muted-foreground/25">no match data</span>
+          </div>
+        )}
+      </div>
+
+      {/* Click popup */}
+      <AnimatePresence>
+        {sel && selMatch && (
+          <motion.div
+            key="popup"
+            initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.15 }}
+            className="overflow-hidden border-t border-border/40">
+            <div className="px-3 py-2 bg-muted/10">
+              {/* Match header */}
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-mono font-semibold text-foreground/90">
+                  {selMatch.isHome ? `vs ${selMatch.awayTeamName}` : `@ ${selMatch.homeTeamName}`}
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className={`text-[8px] font-mono px-1.5 py-0.5 border ${selMatch.isHome ? "border-primary/40 text-primary/70" : "border-border/40 text-muted-foreground/50"}`}>
+                    {selMatch.isHome ? "H" : "A"}
+                  </span>
+                  <span className="text-[10px] font-mono font-bold text-foreground/80">
+                    {selMatch.homeScore}–{selMatch.awayScore}
+                  </span>
+                </div>
+              </div>
+              {/* Detail grid */}
+              <div className="grid grid-cols-3 gap-x-4 gap-y-1.5">
+                {[
+                  { k: "Date",     v: format(new Date(selMatch.date * 1000), "MMM d, yyyy") },
+                  { k: "Position", v: sel.ms.matchPosition || "—" },
+                  { k: "Started",  v: !sel.ms.isSubstitute ? "Yes" : "Sub" },
+                  { k: "Minutes",  v: `${sel.ms.minutesPlayed}'` },
+                  { k: "Rating",   v: sel.ms.rating > 0 ? sel.ms.rating.toFixed(1) : "—",
+                    color: sel.ms.rating >= 7 ? "#4ade80" : sel.ms.rating >= 6 ? "#fbbf24" : sel.ms.rating > 0 ? "#f87171" : undefined },
+                  { k: statDef.label, v: selVal !== null ? String(selVal) : "—",
+                    color: selVal !== null && selVal > 0 ? (color || "#00ffff") : undefined },
+                ].map(row => (
+                  <div key={row.k} className="flex flex-col">
+                    <span className="text-[7px] font-mono text-muted-foreground/40 uppercase tracking-wide">{row.k}</span>
+                    <span className="text-[10px] font-mono font-semibold" style={{ color: row.color }}>
+                      {row.v}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -624,6 +692,7 @@ function LineupIntelPanel({ data, color }: { data: TeamData; color: string | nul
                 totalMatches={totalMatches}
                 globalMax={globalMax}
                 color={color}
+                matches={data.matches}
               />
             ))}
           </div>

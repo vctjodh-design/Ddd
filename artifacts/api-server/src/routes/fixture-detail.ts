@@ -16,6 +16,7 @@ interface RawPlayer {
   jerseyNo?: number;
   position?: string;
   minutesPlayed?: number;
+  rating?: number;
   substitutedIn?: number | null;
   substitutedOut?: number | null;
   isSubstitute?: boolean;
@@ -71,6 +72,8 @@ interface RawGame {
 
 export interface PlayerMatchStats {
   minutesPlayed: number;
+  rating: number;
+  matchPosition: string;
   isSubstitute: boolean;
   goals: number;
   assists: number;
@@ -122,6 +125,8 @@ function parsePlayerStats(p: RawPlayer): PlayerMatchStats {
 
   return {
     minutesPlayed: p.minutesPlayed ?? 0,
+    rating: p.rating ?? 0,
+    matchPosition: p.position ?? "",
     isSubstitute: p.isSubstitute ?? false,
     goals,
     assists,
