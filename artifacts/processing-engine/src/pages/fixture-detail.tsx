@@ -442,9 +442,206 @@ function AvgCards({ data }: { data: TeamData }) {
   );
 }
 
+// ─── Lineup Intel Panel ───────────────────────────────────────────────────────
+
+const LINEUP_STATS: Array<{
+  label: string;
+  short: string;
+  getValue: (ms: PlayerMatchStats) => number;
+  isCard?: boolean;
+}> = [
+  { label: "Fouls",             short: "FC",  getValue: ms => ms.fouls },
+  { label: "Fouls Won",         short: "FW",  getValue: ms => ms.foulsWon },
+  { label: "Tackles",           short: "Tck", getValue: ms => ms.tackles },
+  { label: "Shots",             short: "Sh",  getValue: ms => ms.shots },
+  { label: "SOT",               short: "SOT", getValue: ms => ms.shotsOnTarget },
+  { label: "Foul Involvements", short: "FI",  getValue: ms => ms.foulInvolvements },
+  { label: "Goals",             short: "G",   getValue: ms => ms.goals },
+  { label: "Assists",           short: "A",   getValue: ms => ms.assists },
+  { label: "G + A",             short: "G+A", getValue: ms => ms.goalOrAssist },
+  { label: "Passes",            short: "Pas", getValue: ms => ms.passes },
+  { label: "Yellow Cards",      short: "YC",  getValue: ms => ms.yellowCard ? 1 : 0, isCard: true },
+];
+
+const POS_CONFIG: Array<{ pos: string; label: string; max: number }> = [
+  { pos: "G", label: "GK",  max: 2 },
+  { pos: "D", label: "DEF", max: 5 },
+  { pos: "M", label: "MID", max: 6 },
+  { pos: "F", label: "FWD", max: 4 },
+];
+
+function MiniBarChart({
+  values, globalMax, isCard, color,
+}: {
+  values: number[];
+  globalMax: number;
+  isCard?: boolean;
+  color: string | null;
+}) {
+  return (
+    <div className="flex items-end gap-[2px]" style={{ height: 32 }}>
+      {values.map((v, i) => {
+        const h = globalMax > 0 ? Math.max(2, (v / globalMax) * 32) : 2;
+        let bg: string;
+        if (isCard) {
+          bg = v > 0 ? "#fbbf24" : "#ffffff12";
+        } else if (v === 0) {
+          bg = "#ffffff12";
+        } else {
+          const t = globalMax > 0 ? v / globalMax : 0;
+          bg = color
+            ? `${color}${Math.round(80 + t * 160).toString(16).padStart(2, "0")}`
+            : `rgba(0,${Math.round(185 + t * 70)},${Math.round(155 + t * 45)},${0.45 + t * 0.55})`;
+        }
+        return (
+          <div key={i} className="flex-1 min-w-[5px] transition-all rounded-t-[1px]"
+            style={{ height: `${h}px`, backgroundColor: bg }} />
+        );
+      })}
+    </div>
+  );
+}
+
+function PlayerIntelCard({
+  player, statDef, totalMatches, globalMax, color,
+}: {
+  player: Player;
+  statDef: typeof LINEUP_STATS[0];
+  totalMatches: number;
+  globalMax: number;
+  color: string | null;
+}) {
+  // matchStats[0] = newest match; reverse to get oldest→newest for chart
+  const allStats = [...player.matchStats].reverse();
+  const playedStats = allStats.filter((ms): ms is PlayerMatchStats => ms !== null);
+  const vals = playedStats.map(ms => statDef.getValue(ms));
+  const avg = vals.length > 0 ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
+  const startRate = Math.round((player.appearances / totalMatches) * 100);
+
+  return (
+    <div className="border border-border/30 bg-card/20 p-3 space-y-2 hover:border-border/60 transition-colors">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-[9px] font-mono text-muted-foreground/40 flex-shrink-0">
+            #{player.jerseyNo || "—"}
+          </span>
+          <div className="min-w-0">
+            <div className="text-xs font-mono font-semibold text-foreground/90 truncate">{player.name}</div>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              <div className="text-[8px] font-mono text-muted-foreground/50 uppercase">
+                {player.appearances}/{totalMatches} apps
+              </div>
+              <div className="h-1 w-10 bg-muted/20 overflow-hidden rounded-full">
+                <div className="h-full rounded-full transition-all" style={{
+                  width: `${startRate}%`,
+                  backgroundColor: color || "#00ffff",
+                  opacity: 0.6,
+                }} />
+              </div>
+              <div className="text-[8px] font-mono text-muted-foreground/40">{startRate}%</div>
+            </div>
+          </div>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <div className="text-xl font-mono font-bold" style={{ color: color || "#00ffff" }}>
+            {statDef.isCard ? (vals.reduce((s, v) => s + v, 0) || "0") : avg.toFixed(1)}
+          </div>
+          <div className="text-[8px] font-mono text-muted-foreground/40 uppercase">
+            {statDef.isCard ? "total" : "avg"}
+          </div>
+        </div>
+      </div>
+
+      {vals.length > 0 ? (
+        <MiniBarChart values={vals} globalMax={globalMax} isCard={statDef.isCard} color={color} />
+      ) : (
+        <div className="h-8 flex items-center justify-center">
+          <span className="text-[9px] font-mono text-muted-foreground/25">no match data</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LineupIntelPanel({ data, color }: { data: TeamData; color: string | null }) {
+  const [statIdx, setStatIdx] = useState(0);
+  const statDef = LINEUP_STATS[statIdx];
+  const totalMatches = data.matches.length;
+
+  const grouped = POS_CONFIG.map(({ pos, label, max }) => {
+    const players = data.players
+      .filter(p => p.position === pos && p.appearances > 0)
+      .sort((a, b) => {
+        if (b.appearances !== a.appearances) return b.appearances - a.appearances;
+        const aMin = a.matchStats.reduce((s, ms) => s + (ms?.minutesPlayed ?? 0), 0);
+        const bMin = b.matchStats.reduce((s, ms) => s + (ms?.minutesPlayed ?? 0), 0);
+        return bMin - aMin;
+      })
+      .slice(0, max);
+    return { pos, label, players };
+  }).filter(g => g.players.length > 0);
+
+  const globalMax = Math.max(
+    ...data.players.flatMap(p =>
+      p.matchStats.filter(Boolean).map(ms => statDef.getValue(ms!))
+    ),
+    1
+  );
+
+  return (
+    <div className="space-y-5">
+      <div className="flex gap-0 overflow-x-auto border-b border-border/50" style={{ scrollbarWidth: "none" }}>
+        {LINEUP_STATS.map((s, i) => (
+          <button key={i} onClick={() => setStatIdx(i)}
+            className={`px-3 py-2 text-[10px] font-mono uppercase tracking-wider whitespace-nowrap border-b-2 transition-all flex-shrink-0 ${
+              i === statIdx
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="text-[9px] font-mono text-muted-foreground/50 uppercase tracking-widest">
+        Ranked by appearance frequency — {statDef.label} per match
+      </div>
+
+      {grouped.map(({ pos, label, players }) => (
+        <div key={pos} className="space-y-2">
+          <div className="flex items-center gap-2">
+            <div className="border border-border/50 px-2 py-0.5 text-[9px] font-mono text-muted-foreground uppercase tracking-widest">
+              {label}
+            </div>
+            <div className="flex-1 h-px bg-border/20" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {players.map(p => (
+              <PlayerIntelCard
+                key={p.playerId}
+                player={p}
+                statDef={statDef}
+                totalMatches={totalMatches}
+                globalMax={globalMax}
+                color={color}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {grouped.length === 0 && (
+        <div className="border border-dashed border-border/30 p-8 text-center">
+          <p className="text-xs font-mono text-muted-foreground/40">No lineup data available</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Team Panel ───────────────────────────────────────────────────────────────
 
-type ViewMode = "team" | "players";
+type ViewMode = "team" | "players" | "lineup";
 
 function TeamPanel({ data, color }: { data: TeamData; color: string | null }) {
   const [teamTabIdx, setTeamTabIdx] = useState(0);
@@ -454,6 +651,12 @@ function TeamPanel({ data, color }: { data: TeamData; color: string | null }) {
   const hasHistory = (tab: TeamStatDef) => {
     const h = data.statHistory.find(sh => sh.label === tab.shKey);
     return !!(h && h.matches.length > 0);
+  };
+
+  const VIEW_LABELS: Record<ViewMode, string> = {
+    team: "Team Stats",
+    players: "Player Stats",
+    lineup: "Lineup Intel",
   };
 
   return (
@@ -466,56 +669,73 @@ function TeamPanel({ data, color }: { data: TeamData; color: string | null }) {
       <AvgCards data={data} />
 
       <div className="flex gap-0 border border-border/50 w-fit">
-        {(["team", "players"] as ViewMode[]).map(m => (
+        {(["team", "players", "lineup"] as ViewMode[]).map(m => (
           <button key={m} onClick={() => setViewMode(m)}
             className={`px-4 py-1.5 text-[10px] font-mono uppercase tracking-widest transition-all border-r border-border/30 last:border-r-0 ${
               viewMode === m ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground"
             }`}>
-            {m === "team" ? "Team Stats" : "Player Stats"}
+            {VIEW_LABELS[m]}
           </button>
         ))}
       </div>
 
       {viewMode === "team" ? (
-        <StatTabBar
-          tabs={TEAM_STAT_TABS}
-          selected={teamTabIdx}
-          onSelect={setTeamTabIdx}
-          getAvailable={hasHistory}
-        />
+        <>
+          <StatTabBar
+            tabs={TEAM_STAT_TABS}
+            selected={teamTabIdx}
+            onSelect={setTeamTabIdx}
+            getAvailable={hasHistory}
+          />
+          <div className="flex items-center gap-2">
+            <span className={`text-xs font-mono uppercase tracking-widest ${
+              hasHistory(TEAM_STAT_TABS[teamTabIdx]) ? "text-primary" : "text-muted-foreground/40"
+            }`}>
+              {TEAM_STAT_TABS[teamTabIdx].label}
+            </span>
+            <span className="text-[9px] font-mono text-muted-foreground">— per match</span>
+          </div>
+          <AnimatePresence mode="wait">
+            <motion.div key={`team-${teamTabIdx}`}
+              initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.12 }}>
+              <TeamMatchTable data={data} tabIdx={teamTabIdx} color={color} />
+            </motion.div>
+          </AnimatePresence>
+        </>
+      ) : viewMode === "players" ? (
+        <>
+          <StatTabBar
+            tabs={PLAYER_STAT_TABS}
+            selected={playerTabIdx}
+            onSelect={setPlayerTabIdx}
+            getAvailable={tab => tab.available !== false}
+          />
+          <div className="flex items-center gap-2">
+            <span className={`text-xs font-mono uppercase tracking-widest ${
+              PLAYER_STAT_TABS[playerTabIdx].available !== false ? "text-primary" : "text-muted-foreground/40"
+            }`}>
+              {PLAYER_STAT_TABS[playerTabIdx].label}
+            </span>
+            <span className="text-[9px] font-mono text-muted-foreground">— per player per match</span>
+          </div>
+          <AnimatePresence mode="wait">
+            <motion.div key={`players-${playerTabIdx}`}
+              initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.12 }}>
+              <PlayerMatchMatrix data={data} tabIdx={playerTabIdx} />
+            </motion.div>
+          </AnimatePresence>
+        </>
       ) : (
-        <StatTabBar
-          tabs={PLAYER_STAT_TABS}
-          selected={playerTabIdx}
-          onSelect={setPlayerTabIdx}
-          getAvailable={tab => tab.available !== false}
-        />
+        <AnimatePresence mode="wait">
+          <motion.div key="lineup"
+            initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+            transition={{ duration: 0.12 }}>
+            <LineupIntelPanel data={data} color={color} />
+          </motion.div>
+        </AnimatePresence>
       )}
-
-      <div className="flex items-center gap-2">
-        <span className={`text-xs font-mono uppercase tracking-widest ${
-          viewMode === "team"
-            ? hasHistory(TEAM_STAT_TABS[teamTabIdx]) ? "text-primary" : "text-muted-foreground/40"
-            : PLAYER_STAT_TABS[playerTabIdx].available !== false ? "text-primary" : "text-muted-foreground/40"
-        }`}>
-          {viewMode === "team" ? TEAM_STAT_TABS[teamTabIdx].label : PLAYER_STAT_TABS[playerTabIdx].label}
-        </span>
-        <span className="text-[9px] font-mono text-muted-foreground">
-          — {viewMode === "team" ? "per match" : "per player per match"}
-        </span>
-      </div>
-
-      <AnimatePresence mode="wait">
-        <motion.div key={`${viewMode}-${viewMode === "team" ? teamTabIdx : playerTabIdx}`}
-          initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-          transition={{ duration: 0.12 }}>
-          {viewMode === "team" ? (
-            <TeamMatchTable data={data} tabIdx={teamTabIdx} color={color} />
-          ) : (
-            <PlayerMatchMatrix data={data} tabIdx={playerTabIdx} />
-          )}
-        </motion.div>
-      </AnimatePresence>
     </div>
   );
 }
