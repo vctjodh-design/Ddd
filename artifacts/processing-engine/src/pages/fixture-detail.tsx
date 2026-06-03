@@ -5,91 +5,27 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft, Activity, ChevronLeft, ChevronRight, Lock } from "lucide-react";
 import { useGetFixtureDetail } from "@workspace/api-client-react";
 
-// ─── Team stat tab definitions (exact StatHub order) ─────────────────────────
-
-interface TeamStatDef {
-  label: string;
-  short: string;
-  available: boolean;
-  decimals: number;
-  getValue?: (ts: TeamMatchStats, os: TeamMatchStats) => { ours: number; theirs: number };
-}
-
-const TEAM_STAT_TABS: TeamStatDef[] = [
-  { label: "Goals",                  short: "Gls",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.goals,             theirs: os.goals })           },
-  { label: "Corners",                short: "Cor",  available: false, decimals: 0 },
-  { label: "Shots",                  short: "Sh",   available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.shots,             theirs: os.shots })           },
-  { label: "Cards",                  short: "Crd",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.yellowCards+ts.redCards, theirs: os.yellowCards+os.redCards }) },
-  { label: "Crosses",                short: "Cr",   available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.crosses,           theirs: os.crosses })         },
-  { label: "Big Chance Created",     short: "BCC",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.bigChancesCreated, theirs: os.bigChancesCreated }) },
-  { label: "Big Chance Missed",      short: "BCM",  available: false, decimals: 0 },
-  { label: "Big Chance Scored",      short: "BCS",  available: false, decimals: 0 },
-  { label: "Expected Goals",         short: "xG",   available: true,  decimals: 2, getValue: (ts,os) => ({ ours: ts.xG,               theirs: os.xG })              },
-  { label: "Shots On Goal",          short: "SoG",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.shotsOnTarget,    theirs: os.shotsOnTarget })   },
-  { label: "Shots Off Goal",         short: "SoFF", available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.shotsOffTarget,   theirs: os.shotsOffTarget })  },
-  { label: "Shots Inside Box",       short: "SIB",  available: false, decimals: 0 },
-  { label: "Shots Outside Box",      short: "SOB",  available: false, decimals: 0 },
-  { label: "Total Clearance",        short: "Clr",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.clearances,       theirs: os.clearances })      },
-  { label: "Dispossessed",           short: "Dis",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.dispossessed,     theirs: os.dispossessed })    },
-  { label: "Errors Lead To Goal",    short: "ELG",  available: false, decimals: 0 },
-  { label: "Errors Lead To Shot",    short: "ELS",  available: false, decimals: 0 },
-  { label: "Fouls",                  short: "Fls",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.fouls,            theirs: os.fouls })           },
-  { label: "Goalkeeper Saves",       short: "Sav",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.saves,            theirs: os.saves })           },
-  { label: "Interception Won",       short: "Int",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.interceptions,    theirs: os.interceptions })   },
-  { label: "Tackles",                short: "Tck",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.tackles,          theirs: os.tackles })         },
-  { label: "Free Kicks",             short: "FK",   available: false, decimals: 0 },
-  { label: "Goal Kicks",             short: "GK",   available: false, decimals: 0 },
-  { label: "Throw Ins",              short: "TI",   available: false, decimals: 0 },
-  { label: "Possession",             short: "Pos",  available: false, decimals: 1 },
-  { label: "Offsides",               short: "Off",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.offsides,         theirs: os.offsides })        },
-  { label: "Passes",                 short: "Pas",  available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.passes,           theirs: os.passes })          },
-  { label: "Touches In Opp Box",     short: "TOB",  available: false, decimals: 0 },
-  { label: "Red Cards",              short: "RC",   available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.redCards,          theirs: os.redCards })        },
-  { label: "Yellow Cards",           short: "YC",   available: true,  decimals: 0, getValue: (ts,os) => ({ ours: ts.yellowCards,       theirs: os.yellowCards })     },
-];
-
-// ─── Player stat tab definitions (exact StatHub order) ───────────────────────
-
-interface PlayerStatDef {
-  label: string;
-  short: string;
-  available: boolean;
-  beta?: boolean;
-  decimals: number;
-  getValue?: (ms: PlayerMatchStats) => number;
-  getTotal?: (all: (PlayerMatchStats | null)[]) => number;
-}
-
-const PLAYER_STAT_TABS: PlayerStatDef[] = [
-  { label: "Shots Outside the Box",            short: "SOB",  available: false, beta: true,  decimals: 0 },
-  { label: "Shots On Target Outside the Box",  short: "STOB", available: false, beta: true,  decimals: 0 },
-  { label: "Headed Shot",                      short: "HS",   available: false, beta: true,  decimals: 0 },
-  { label: "Headed Shot On Target",            short: "HST",  available: false, beta: true,  decimals: 0 },
-  { label: "First Half Shots",                 short: "FHS",  available: false, beta: true,  decimals: 0 },
-  { label: "First Half Shots On Target",       short: "FHST", available: false, beta: true,  decimals: 0 },
-  { label: "Fouls Committed",   short: "FC",   available: true, decimals: 0, getValue: ms => ms.fouls },
-  { label: "Fouls Won",         short: "FW",   available: true, decimals: 0, getValue: ms => ms.foulsWon },
-  { label: "Tackles",           short: "Tck",  available: true, decimals: 0, getValue: ms => ms.tackles },
-  { label: "Shots",             short: "Sh",   available: true, decimals: 0, getValue: ms => ms.shots },
-  { label: "Shots on Target",   short: "SoT",  available: true, decimals: 0, getValue: ms => ms.shotsOnTarget },
-  { label: "Foul Involvements", short: "FI",   available: true, decimals: 0, getValue: ms => ms.foulInvolvements },
-  { label: "Goals",             short: "G",    available: true, decimals: 0, getValue: ms => ms.goals },
-  { label: "Assists",           short: "A",    available: true, decimals: 0, getValue: ms => ms.assists },
-  { label: "Scored OR Assisted",short: "G+A",  available: true, decimals: 0, getValue: ms => ms.goalOrAssist },
-  { label: "Expected Goals (xG)", short: "xG", available: true, decimals: 2, getValue: ms => ms.xG },
-  { label: "Expected Assists (xA)", short: "xA", available: true, decimals: 2, getValue: ms => ms.xA },
-  { label: "XG + XA",           short: "xG+A", available: true, decimals: 2, getValue: ms => ms.xGxA },
-  { label: "Passes",            short: "Pas",  available: true, decimals: 0, getValue: ms => ms.passes },
-  { label: "Crosses",           short: "Cr",   available: true, decimals: 0, getValue: ms => ms.crosses },
-  { label: "Possession Lost",   short: "PL",   available: true, decimals: 0, getValue: ms => ms.possessionLost },
-  { label: "Dispossessed",      short: "Dis",  available: true, decimals: 0, getValue: ms => ms.dispossessed },
-  { label: "Interceptions Won", short: "Int",  available: true, decimals: 0, getValue: ms => ms.interceptions },
-  { label: "Yellow Cards",      short: "YC",   available: true, decimals: 0, getValue: ms => ms.yellowCard ? 1 : 0 },
-  { label: "Offsides",          short: "Off",  available: true, decimals: 0, getValue: ms => ms.offsides },
-  { label: "Saves",             short: "Sav",  available: true, decimals: 0, getValue: ms => ms.saves },
-];
-
 // ─── Types ───────────────────────────────────────────────────────────────────
+
+interface SHMatchStatRow {
+  eventId: number;
+  date: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number;
+  awayScore: number;
+  homeValue: number;
+  awayValue: number;
+  myValue: number;
+  opponentValue: number;
+  result: "W" | "D" | "L";
+}
+
+interface SHStatHistory {
+  key: string;
+  label: string;
+  matches: SHMatchStatRow[];
+}
 
 interface PlayerMatchStats {
   minutesPlayed: number; isSubstitute: boolean;
@@ -104,21 +40,11 @@ interface PlayerMatchStats {
   duelWon: number; duelLost: number; aerialWon: number; wonContest: number;
 }
 
-interface TeamMatchStats {
-  goals: number; assists: number; shots: number; shotsOnTarget: number; shotsOffTarget: number; blockedShots: number;
-  passes: number; accuratePasses: number; crosses: number; accurateCrosses: number; longBalls: number; accurateLongBalls: number;
-  tackles: number; interceptions: number; fouls: number; foulsWon: number; yellowCards: number; redCards: number;
-  saves: number; xG: number; xA: number; bigChancesCreated: number; keyPasses: number;
-  offsides: number; dispossessed: number; possessionLost: number; clearances: number;
-  duelWon: number; duelLost: number; aerialWon: number; wonContest: number;
-}
-
 interface Match {
   eventId: number; date: number;
   homeTeamName: string; awayTeamName: string;
   homeScore: number; awayScore: number;
   tournamentName: string; isHome: boolean;
-  teamStats: TeamMatchStats; oppStats: TeamMatchStats;
 }
 
 interface Player {
@@ -126,25 +52,114 @@ interface Player {
   matchStats: (PlayerMatchStats | null)[];
 }
 
-interface TeamData { matches: Match[]; players: Player[]; matchDates: number[]; }
+interface TeamData {
+  matches: Match[];
+  players: Player[];
+  matchDates: number[];
+  possession: number;
+  statHistory: SHStatHistory[];
+}
+
+// ─── Team stat tab definitions ────────────────────────────────────────────────
+
+interface TeamStatDef {
+  label: string;
+  short: string;
+  shKey: string;
+  decimals: number;
+}
+
+const TEAM_STAT_TABS: TeamStatDef[] = [
+  { label: "Goals",                   short: "Gls",  shKey: "Goals",                   decimals: 0 },
+  { label: "Corners",                 short: "Cor",  shKey: "Corners",                 decimals: 0 },
+  { label: "Shots",                   short: "Sh",   shKey: "Shots",                   decimals: 0 },
+  { label: "Cards",                   short: "Crd",  shKey: "Cards",                   decimals: 0 },
+  { label: "Crosses",                 short: "Cr",   shKey: "Crosses",                 decimals: 0 },
+  { label: "Big Chance Created",      short: "BCC",  shKey: "Big Chance Created",      decimals: 0 },
+  { label: "Big Chance Missed",       short: "BCM",  shKey: "Big Chance Missed",       decimals: 0 },
+  { label: "Big Chance Scored",       short: "BCS",  shKey: "Big Chance Scored",       decimals: 0 },
+  { label: "Expected Goals",          short: "xG",   shKey: "Expected Goals",          decimals: 2 },
+  { label: "Shots On Goal",           short: "SoG",  shKey: "Shots On Goal",           decimals: 0 },
+  { label: "Shots Off Goal",          short: "SoFF", shKey: "Shots Off Goal",          decimals: 0 },
+  { label: "Total Shots Inside Box",  short: "SIB",  shKey: "Total Shots Inside Box",  decimals: 0 },
+  { label: "Total Shots Outside Box", short: "SOB",  shKey: "Total Shots Outside Box", decimals: 0 },
+  { label: "Total Clearance",         short: "Clr",  shKey: "Total Clearance",         decimals: 0 },
+  { label: "Dispossessed",            short: "Dis",  shKey: "Dispossessed",            decimals: 0 },
+  { label: "Errors Lead To Goal",     short: "ELG",  shKey: "Errors Lead To Goal",     decimals: 0 },
+  { label: "Errors Lead To Shot",     short: "ELS",  shKey: "Errors Lead To Shot",     decimals: 0 },
+  { label: "Fouls",                   short: "Fls",  shKey: "Fouls",                   decimals: 0 },
+  { label: "Goalkeeper Saves",        short: "Sav",  shKey: "Goalkeeper Saves",        decimals: 0 },
+  { label: "Interception Won",        short: "Int",  shKey: "Interception Won",        decimals: 0 },
+  { label: "Tackles",                 short: "Tck",  shKey: "Tackles",                 decimals: 0 },
+  { label: "Free Kicks",              short: "FK",   shKey: "Free Kicks",              decimals: 0 },
+  { label: "Goal Kicks",              short: "GK",   shKey: "Goal Kicks",              decimals: 0 },
+  { label: "Throw Ins",               short: "TI",   shKey: "Throw Ins",               decimals: 0 },
+  { label: "Possession",              short: "Pos",  shKey: "Possession",              decimals: 1 },
+  { label: "Offsides",                short: "Off",  shKey: "Offsides",                decimals: 0 },
+  { label: "Passes",                  short: "Pas",  shKey: "Passes",                  decimals: 0 },
+  { label: "Touches In Opp Box",      short: "TOB",  shKey: "Touches In Opp Box",      decimals: 0 },
+  { label: "Red Cards",               short: "RC",   shKey: "Red Cards",               decimals: 0 },
+  { label: "Yellow Cards",            short: "YC",   shKey: "Yellow Cards",            decimals: 0 },
+];
+
+// ─── Player stat tab definitions ──────────────────────────────────────────────
+
+interface PlayerStatDef {
+  label: string;
+  short: string;
+  available: boolean;
+  beta?: boolean;
+  decimals: number;
+  getValue?: (ms: PlayerMatchStats) => number;
+}
+
+const PLAYER_STAT_TABS: PlayerStatDef[] = [
+  { label: "Shots Outside the Box",           short: "SOB",  available: false, beta: true,  decimals: 0 },
+  { label: "Shots On Target Outside the Box", short: "STOB", available: false, beta: true,  decimals: 0 },
+  { label: "Headed Shot",                     short: "HS",   available: false, beta: true,  decimals: 0 },
+  { label: "Headed Shot On Target",           short: "HST",  available: false, beta: true,  decimals: 0 },
+  { label: "First Half Shots",                short: "FHS",  available: false, beta: true,  decimals: 0 },
+  { label: "First Half Shots On Target",      short: "FHST", available: false, beta: true,  decimals: 0 },
+  { label: "Fouls Committed",    short: "FC",   available: true, decimals: 0, getValue: ms => ms.fouls },
+  { label: "Fouls Won",          short: "FW",   available: true, decimals: 0, getValue: ms => ms.foulsWon },
+  { label: "Tackles",            short: "Tck",  available: true, decimals: 0, getValue: ms => ms.tackles },
+  { label: "Shots",              short: "Sh",   available: true, decimals: 0, getValue: ms => ms.shots },
+  { label: "Shots on Target",    short: "SoT",  available: true, decimals: 0, getValue: ms => ms.shotsOnTarget },
+  { label: "Foul Involvements",  short: "FI",   available: true, decimals: 0, getValue: ms => ms.foulInvolvements },
+  { label: "Goals",              short: "G",    available: true, decimals: 0, getValue: ms => ms.goals },
+  { label: "Assists",            short: "A",    available: true, decimals: 0, getValue: ms => ms.assists },
+  { label: "Scored OR Assisted", short: "G+A",  available: true, decimals: 0, getValue: ms => ms.goalOrAssist },
+  { label: "Expected Goals (xG)",short: "xG",   available: true, decimals: 2, getValue: ms => ms.xG },
+  { label: "Expected Assists (xA)", short: "xA",available: true, decimals: 2, getValue: ms => ms.xA },
+  { label: "XG + XA",            short: "xG+A", available: true, decimals: 2, getValue: ms => ms.xGxA },
+  { label: "Passes",             short: "Pas",  available: true, decimals: 0, getValue: ms => ms.passes },
+  { label: "Crosses",            short: "Cr",   available: true, decimals: 0, getValue: ms => ms.crosses },
+  { label: "Possession Lost",    short: "PL",   available: true, decimals: 0, getValue: ms => ms.possessionLost },
+  { label: "Dispossessed",       short: "Dis",  available: true, decimals: 0, getValue: ms => ms.dispossessed },
+  { label: "Interceptions Won",  short: "Int",  available: true, decimals: 0, getValue: ms => ms.interceptions },
+  { label: "Yellow Cards",       short: "YC",   available: true, decimals: 0, getValue: ms => ms.yellowCard ? 1 : 0 },
+  { label: "Offsides",           short: "Off",  available: true, decimals: 0, getValue: ms => ms.offsides },
+  { label: "Saves",              short: "Sav",  available: true, decimals: 0, getValue: ms => ms.saves },
+];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function resultColor(isHome: boolean, homeScore: number, awayScore: number) {
-  const our = isHome ? homeScore : awayScore;
-  const opp = isHome ? awayScore : homeScore;
-  if (our > opp) return "text-green-400 border-green-500/40 bg-green-500/10";
-  if (our < opp) return "text-red-400 border-red-500/40 bg-red-500/10";
+function resultColor(result: "W" | "D" | "L") {
+  if (result === "W") return "text-green-400 border-green-500/40 bg-green-500/10";
+  if (result === "L") return "text-red-400 border-red-500/40 bg-red-500/10";
   return "text-yellow-400 border-yellow-500/40 bg-yellow-500/10";
 }
 
-function ResultBadge({ isHome, homeScore, awayScore }: { isHome: boolean; homeScore: number; awayScore: number }) {
+function resultFromMatch(isHome: boolean, homeScore: number, awayScore: number): "W" | "D" | "L" {
   const our = isHome ? homeScore : awayScore;
   const opp = isHome ? awayScore : homeScore;
-  const r = our > opp ? "W" : our < opp ? "L" : "D";
+  return our > opp ? "W" : our < opp ? "L" : "D";
+}
+
+function ResultBadge({ result }: { result: "W" | "D" | "L" }) {
   return (
-    <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 border ${resultColor(isHome, homeScore, awayScore)}`}>
-      {r}
+    <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 border ${resultColor(result)}`}>
+      {result}
     </span>
   );
 }
@@ -154,12 +169,10 @@ function FormBar({ matches }: { matches: Match[] }) {
   return (
     <div className="flex items-center gap-1">
       {last5.map((m) => {
-        const our = m.isHome ? m.homeScore : m.awayScore;
-        const opp = m.isHome ? m.awayScore : m.homeScore;
-        const r = our > opp ? "W" : our < opp ? "L" : "D";
+        const r = resultFromMatch(m.isHome, m.homeScore, m.awayScore);
         return (
           <div key={m.eventId} title={`${m.homeTeamName} ${m.homeScore}-${m.awayScore} ${m.awayTeamName}`}
-            className={`w-5 h-5 flex items-center justify-center text-[8px] font-mono font-bold border ${resultColor(m.isHome, m.homeScore, m.awayScore)}`}>
+            className={`w-5 h-5 flex items-center justify-center text-[8px] font-mono font-bold border ${resultColor(r)}`}>
             {r}
           </div>
         );
@@ -168,13 +181,18 @@ function FormBar({ matches }: { matches: Match[] }) {
   );
 }
 
-// ─── Generic Stat Tab Bar (works for both team and player tabs) ───────────────
+// ─── Generic Stat Tab Bar ────────────────────────────────────────────────────
 
-interface TabDef { label: string; available: boolean; beta?: boolean }
+interface TabDef { label: string; available?: boolean; beta?: boolean }
 
 function StatTabBar<T extends TabDef>({
-  tabs, selected, onSelect,
-}: { tabs: T[]; selected: number; onSelect: (i: number) => void }) {
+  tabs, selected, onSelect, getAvailable,
+}: {
+  tabs: T[];
+  selected: number;
+  onSelect: (i: number) => void;
+  getAvailable?: (tab: T) => boolean;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const scroll = (dir: -1 | 1) => scrollRef.current?.scrollBy({ left: dir * 200, behavior: "smooth" });
 
@@ -186,7 +204,7 @@ function StatTabBar<T extends TabDef>({
       <div ref={scrollRef} className="flex gap-0 overflow-x-auto border-b border-border/50 flex-1" style={{ scrollbarWidth: "none" }}>
         {tabs.map((tab, i) => {
           const isActive = i === selected;
-          const isUnavail = !tab.available;
+          const isUnavail = getAvailable ? !getAvailable(tab) : tab.available === false;
           return (
             <button key={i} onClick={() => onSelect(i)}
               className={`px-3 py-2 text-[10px] font-mono uppercase tracking-wider whitespace-nowrap border-b-2 transition-all flex-shrink-0 flex items-center gap-1 ${
@@ -212,7 +230,7 @@ function StatTabBar<T extends TabDef>({
 
 // ─── Unavailable stat placeholder ────────────────────────────────────────────
 
-function UnavailableStat({ label, beta }: { label: string; beta?: boolean }) {
+function UnavailableStat({ label, beta, noData }: { label: string; beta?: boolean; noData?: boolean }) {
   return (
     <div className="border border-dashed border-border/30 p-8 text-center space-y-2">
       <Lock className="w-5 h-5 text-muted-foreground/30 mx-auto" />
@@ -220,20 +238,31 @@ function UnavailableStat({ label, beta }: { label: string; beta?: boolean }) {
       <p className="text-[10px] text-muted-foreground/30 max-w-xs mx-auto">
         {beta
           ? "This is a Beta stat — not yet available in the StatHub lineup data endpoint."
-          : "This stat (corners, possession, shots inside/outside box, etc.) is not included in the StatHub last-games API response. Only player-derived stats are available."}
+          : noData
+          ? "No data returned from StatsHub for this stat."
+          : "This stat is not available for this team."}
       </p>
     </div>
   );
 }
 
-// ─── Team Match Table ─────────────────────────────────────────────────────────
+// ─── Team Match Table (uses SHStatHistory) ───────────────────────────────────
 
-function TeamMatchTable({ data, tabIdx, color }: { data: TeamData; tabIdx: number; color: string | null }) {
+function TeamMatchTable({
+  data, tabIdx, color,
+}: {
+  data: TeamData;
+  tabIdx: number;
+  color: string | null;
+}) {
   const tab = TEAM_STAT_TABS[tabIdx];
-  if (!tab.available || !tab.getValue) return <UnavailableStat label={tab.label} />;
+  const history = data.statHistory.find(h => h.label === tab.shKey);
 
-  const sorted = [...data.matches].sort((a, b) => b.date - a.date);
-  const vals = sorted.map(m => tab.getValue!(m.teamStats, m.oppStats).ours);
+  if (!history || history.matches.length === 0) {
+    return <UnavailableStat label={tab.label} noData />;
+  }
+
+  const vals = history.matches.map(m => m.myValue);
   const maxVal = Math.max(...vals, 0.01);
 
   return (
@@ -252,37 +281,31 @@ function TeamMatchTable({ data, tabIdx, color }: { data: TeamData; tabIdx: numbe
             </tr>
           </thead>
           <tbody className="divide-y divide-border/20">
-            {sorted.map((m, i) => {
-              const { ours, theirs } = tab.getValue!(m.teamStats, m.oppStats);
-              const intensity = maxVal > 0 ? ours / maxVal : 0;
+            {history.matches.map((m, i) => {
+              const intensity = maxVal > 0 ? m.myValue / maxVal : 0;
               return (
                 <motion.tr key={m.eventId}
                   initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.02 }}
                   className="hover:bg-white/[0.02]">
-                  <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
-                    {format(new Date(m.date * 1000), "dd MMM")}
-                  </td>
+                  <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{m.date}</td>
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap items-baseline gap-x-1">
-                      <span className={m.isHome ? "font-medium" : "text-foreground/60"}>{m.homeTeamName}</span>
+                      <span className="text-foreground/60">{m.homeTeam}</span>
                       <span className="text-muted-foreground text-[10px]">{m.homeScore}-{m.awayScore}</span>
-                      <span className={!m.isHome ? "font-medium" : "text-foreground/60"}>{m.awayTeamName}</span>
+                      <span className="text-foreground/60">{m.awayTeam}</span>
                     </div>
-                    {m.tournamentName && (
-                      <div className="text-[9px] text-muted-foreground/40 truncate max-w-[200px]">{m.tournamentName}</div>
-                    )}
                   </td>
                   <td className="px-3 py-2 text-center">
                     <span className="font-bold text-sm"
                       style={{ color: `rgba(${intensity > 0.5 ? "0,255,200" : "180,180,200"},${0.45 + intensity * 0.55})` }}>
-                      {tab.decimals > 0 ? ours.toFixed(tab.decimals) : ours}
+                      {tab.decimals > 0 ? m.myValue.toFixed(tab.decimals) : m.myValue}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-center text-muted-foreground">
-                    {tab.decimals > 0 ? theirs.toFixed(tab.decimals) : theirs}
+                    {tab.decimals > 0 ? m.opponentValue.toFixed(tab.decimals) : m.opponentValue}
                   </td>
                   <td className="px-2 py-2 text-center">
-                    <ResultBadge isHome={m.isHome} homeScore={m.homeScore} awayScore={m.awayScore} />
+                    <ResultBadge result={m.result} />
                   </td>
                 </motion.tr>
               );
@@ -332,7 +355,7 @@ function PlayerMatchMatrix({ data, tabIdx }: { data: TeamData; tabIdx: number })
               {matches.map(m => (
                 <th key={m.eventId} className="px-1 py-1 text-center whitespace-nowrap border-r border-border/10 min-w-[34px]">
                   <div className="text-[8px] text-muted-foreground/70">{format(new Date(m.date * 1000), "MMM\u00A0d")}</div>
-                  <div className={`text-[8px] font-bold ${resultColor(m.isHome, m.homeScore, m.awayScore).split(" ")[0]}`}>
+                  <div className={`text-[8px] font-bold ${resultColor(resultFromMatch(m.isHome, m.homeScore, m.awayScore)).split(" ")[0]}`}>
                     {m.isHome ? m.homeScore : m.awayScore}-{m.isHome ? m.awayScore : m.homeScore}
                   </div>
                 </th>
@@ -353,7 +376,6 @@ function PlayerMatchMatrix({ data, tabIdx }: { data: TeamData; tabIdx: number })
                 </td>
                 <td className="px-2 py-1.5 text-center text-muted-foreground border-r border-border/20">{p.appearances}</td>
                 {Array.from({ length: n }, (_, i) => {
-                  // matchStats are ordered newest-first; matches are sorted oldest-first
                   const ms = p.matchStats[n - 1 - i];
                   const val = ms ? getVal(ms) : null;
                   const intensity = (val !== null && maxVal > 0) ? val / maxVal : 0;
@@ -390,21 +412,24 @@ function PlayerMatchMatrix({ data, tabIdx }: { data: TeamData; tabIdx: number })
 // ─── Avg Stat Cards ───────────────────────────────────────────────────────────
 
 function AvgCards({ data }: { data: TeamData }) {
-  const n = data.matches.length || 1;
-  const teamAvg = (key: keyof TeamMatchStats) => {
-    const total = data.matches.reduce((s, m) => s + ((m.teamStats[key] as number) ?? 0), 0);
-    return (total / n).toFixed(1);
+  const getAvg = (label: string, dec = 1) => {
+    const history = data.statHistory.find(h => h.label === label);
+    if (!history || !history.matches.length) return "—";
+    const total = history.matches.reduce((s, m) => s + m.myValue, 0);
+    return (total / history.matches.length).toFixed(dec);
   };
+
   const cards = [
-    { label: "Goals/G",   val: teamAvg("goals") },
-    { label: "Shots/G",   val: teamAvg("shots") },
-    { label: "On Tgt/G",  val: teamAvg("shotsOnTarget") },
-    { label: "Passes/G",  val: teamAvg("passes") },
-    { label: "Tackles/G", val: teamAvg("tackles") },
-    { label: "Yellow/G",  val: teamAvg("yellowCards") },
-    { label: "Fouls/G",   val: teamAvg("fouls") },
-    { label: "Int/G",     val: teamAvg("interceptions") },
+    { label: "Goals/G",   val: getAvg("Goals", 1) },
+    { label: "Shots/G",   val: getAvg("Shots", 1) },
+    { label: "On Tgt/G",  val: getAvg("Shots On Goal", 1) },
+    { label: "xG/G",      val: getAvg("Expected Goals", 2) },
+    { label: "Passes/G",  val: getAvg("Passes", 0) },
+    { label: "Tackles/G", val: getAvg("Tackles", 1) },
+    { label: "Fouls/G",   val: getAvg("Fouls", 1) },
+    { label: "Pos%",      val: data.possession > 0 ? `${data.possession.toFixed(0)}%` : getAvg("Possession", 0) },
   ];
+
   return (
     <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
       {cards.map(c => (
@@ -423,19 +448,16 @@ type ViewMode = "team" | "players";
 
 function TeamPanel({ data, color }: { data: TeamData; color: string | null }) {
   const [teamTabIdx, setTeamTabIdx] = useState(0);
-  const [playerTabIdx, setPlayerTabIdx] = useState(12); // default to "Goals" in player list
+  const [playerTabIdx, setPlayerTabIdx] = useState(12);
   const [viewMode, setViewMode] = useState<ViewMode>("team");
 
-  const currentLabel = viewMode === "team"
-    ? TEAM_STAT_TABS[teamTabIdx].label
-    : PLAYER_STAT_TABS[playerTabIdx].label;
-  const isCurrentUnavail = viewMode === "team"
-    ? !TEAM_STAT_TABS[teamTabIdx].available
-    : !PLAYER_STAT_TABS[playerTabIdx].available;
+  const hasHistory = (tab: TeamStatDef) => {
+    const h = data.statHistory.find(sh => sh.label === tab.shKey);
+    return !!(h && h.matches.length > 0);
+  };
 
   return (
     <div className="space-y-4">
-      {/* Form + avg */}
       <div className="flex items-center gap-3">
         <span className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">Form</span>
         <FormBar matches={data.matches} />
@@ -443,7 +465,6 @@ function TeamPanel({ data, color }: { data: TeamData; color: string | null }) {
       </div>
       <AvgCards data={data} />
 
-      {/* View mode toggle */}
       <div className="flex gap-0 border border-border/50 w-fit">
         {(["team", "players"] as ViewMode[]).map(m => (
           <button key={m} onClick={() => setViewMode(m)}
@@ -455,25 +476,35 @@ function TeamPanel({ data, color }: { data: TeamData; color: string | null }) {
         ))}
       </div>
 
-      {/* Stat tab bar */}
       {viewMode === "team" ? (
-        <StatTabBar tabs={TEAM_STAT_TABS} selected={teamTabIdx} onSelect={setTeamTabIdx} />
+        <StatTabBar
+          tabs={TEAM_STAT_TABS}
+          selected={teamTabIdx}
+          onSelect={setTeamTabIdx}
+          getAvailable={hasHistory}
+        />
       ) : (
-        <StatTabBar tabs={PLAYER_STAT_TABS} selected={playerTabIdx} onSelect={setPlayerTabIdx} />
+        <StatTabBar
+          tabs={PLAYER_STAT_TABS}
+          selected={playerTabIdx}
+          onSelect={setPlayerTabIdx}
+          getAvailable={tab => tab.available !== false}
+        />
       )}
 
-      {/* Stat label */}
       <div className="flex items-center gap-2">
-        {isCurrentUnavail && <Lock className="w-3 h-3 text-muted-foreground/40" />}
-        <span className={`text-xs font-mono uppercase tracking-widest ${isCurrentUnavail ? "text-muted-foreground/40" : "text-primary"}`}>
-          {currentLabel}
+        <span className={`text-xs font-mono uppercase tracking-widest ${
+          viewMode === "team"
+            ? hasHistory(TEAM_STAT_TABS[teamTabIdx]) ? "text-primary" : "text-muted-foreground/40"
+            : PLAYER_STAT_TABS[playerTabIdx].available !== false ? "text-primary" : "text-muted-foreground/40"
+        }`}>
+          {viewMode === "team" ? TEAM_STAT_TABS[teamTabIdx].label : PLAYER_STAT_TABS[playerTabIdx].label}
         </span>
         <span className="text-[9px] font-mono text-muted-foreground">
           — {viewMode === "team" ? "per match" : "per player per match"}
         </span>
       </div>
 
-      {/* Content */}
       <AnimatePresence mode="wait">
         <motion.div key={`${viewMode}-${viewMode === "team" ? teamTabIdx : playerTabIdx}`}
           initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
@@ -495,30 +526,29 @@ function ComparePanel({ home, away, fixture }: {
   home: TeamData; away: TeamData;
   fixture: { homeTeam: { name: string; colorPrimary: string | null }; awayTeam: { name: string; colorPrimary: string | null } };
 }) {
-  const hN = home.matches.length || 1;
-  const aN = away.matches.length || 1;
-  const hAvg = (key: keyof TeamMatchStats) =>
-    home.matches.reduce((s, m) => s + ((m.teamStats[key] as number) ?? 0), 0) / hN;
-  const aAvg = (key: keyof TeamMatchStats) =>
-    away.matches.reduce((s, m) => s + ((m.teamStats[key] as number) ?? 0), 0) / aN;
+  const getAvg = (teamData: TeamData, label: string) => {
+    const h = teamData.statHistory.find(sh => sh.label === label);
+    if (!h || !h.matches.length) return 0;
+    return h.matches.reduce((s, m) => s + m.myValue, 0) / h.matches.length;
+  };
 
-  const compareStats: { label: string; key: keyof TeamMatchStats; dec: number }[] = [
-    { label: "Goals",           key: "goals",           dec: 1 },
-    { label: "Shots",           key: "shots",           dec: 1 },
-    { label: "Shots on Target", key: "shotsOnTarget",   dec: 1 },
-    { label: "xG",              key: "xG",              dec: 2 },
-    { label: "xA",              key: "xA",              dec: 2 },
-    { label: "Big Chances",     key: "bigChancesCreated", dec: 1 },
-    { label: "Passes",          key: "passes",          dec: 0 },
-    { label: "Accurate Passes", key: "accuratePasses",  dec: 0 },
-    { label: "Crosses",         key: "crosses",         dec: 1 },
-    { label: "Tackles",         key: "tackles",         dec: 1 },
-    { label: "Interceptions",   key: "interceptions",   dec: 1 },
-    { label: "Clearances",      key: "clearances",      dec: 1 },
-    { label: "Fouls",           key: "fouls",           dec: 1 },
-    { label: "Yellow Cards",    key: "yellowCards",     dec: 1 },
-    { label: "Saves",           key: "saves",           dec: 1 },
-    { label: "Offsides",        key: "offsides",        dec: 1 },
+  const compareStats: { label: string; statLabel: string; dec: number }[] = [
+    { label: "Goals",              statLabel: "Goals",              dec: 1 },
+    { label: "Shots",              statLabel: "Shots",              dec: 1 },
+    { label: "Shots on Target",    statLabel: "Shots On Goal",      dec: 1 },
+    { label: "xG",                 statLabel: "Expected Goals",     dec: 2 },
+    { label: "Big Chances",        statLabel: "Big Chance Created", dec: 1 },
+    { label: "Passes",             statLabel: "Passes",             dec: 0 },
+    { label: "Crosses",            statLabel: "Crosses",            dec: 1 },
+    { label: "Corners",            statLabel: "Corners",            dec: 1 },
+    { label: "Possession %",       statLabel: "Possession",         dec: 0 },
+    { label: "Tackles",            statLabel: "Tackles",            dec: 1 },
+    { label: "Interceptions",      statLabel: "Interception Won",   dec: 1 },
+    { label: "Clearances",         statLabel: "Total Clearance",    dec: 1 },
+    { label: "Fouls",              statLabel: "Fouls",              dec: 1 },
+    { label: "Yellow Cards",       statLabel: "Yellow Cards",       dec: 1 },
+    { label: "Saves",              statLabel: "Goalkeeper Saves",   dec: 1 },
+    { label: "Offsides",           statLabel: "Offsides",           dec: 1 },
   ];
 
   return (
@@ -530,12 +560,12 @@ function ComparePanel({ home, away, fixture }: {
       </div>
       <div className="border border-border/50 bg-card/20 divide-y divide-border/20">
         {compareStats.map(s => {
-          const h = hAvg(s.key);
-          const a = aAvg(s.key);
+          const h = getAvg(home, s.statLabel);
+          const a = getAvg(away, s.statLabel);
           const total = h + a;
           const hPct = total === 0 ? 50 : Math.round((h / total) * 100);
           return (
-            <div key={s.key} className="grid grid-cols-[60px_1fr_60px] items-center gap-2 px-3 py-2">
+            <div key={s.statLabel} className="grid grid-cols-[60px_1fr_60px] items-center gap-2 px-3 py-2">
               <div className="text-right font-mono text-sm font-bold text-foreground">{s.dec === 0 ? Math.round(h) : h.toFixed(s.dec)}</div>
               <div className="flex flex-col gap-1">
                 <div className="text-[9px] text-center text-muted-foreground uppercase tracking-wider">{s.label}</div>
@@ -576,7 +606,6 @@ export default function FixtureDetail() {
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col dark">
-      {/* Header */}
       <header className="border-b border-border/50 bg-card/80 backdrop-blur-sm sticky top-0 z-50">
         <div className="container mx-auto px-4 h-14 flex items-center gap-4">
           <button onClick={() => navigate("/")}
@@ -604,7 +633,6 @@ export default function FixtureDetail() {
         </div>
       ) : (
         <main className="container mx-auto px-4 pb-20 flex-1 space-y-6 pt-6">
-          {/* Fixture card */}
           <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
             className="border border-border/50 bg-card/40 overflow-hidden">
             <div className="text-center py-1.5 bg-card/60 border-b border-border/40">
@@ -643,7 +671,6 @@ export default function FixtureDetail() {
             </div>
           </motion.div>
 
-          {/* Tabs */}
           <div className="flex gap-0 border-b border-border/50">
             {(["home", "away", "compare"] as const).map(tab => (
               <button key={tab} onClick={() => setActiveTab(tab)}
@@ -655,7 +682,6 @@ export default function FixtureDetail() {
             ))}
           </div>
 
-          {/* Tab content */}
           <AnimatePresence mode="wait">
             {activeTab === "home" && home ? (
               <motion.div key="home" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>

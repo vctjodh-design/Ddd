@@ -1,0 +1,542 @@
+/**
+ * StatsHub.com integration
+ * Fetches per-season aggregate stats + per-match historical stat rows for each team.
+ *
+ * API base: https://www.statshub.com/api/
+ * Key endpoints:
+ *   GET /api/team/{teamId}/tournaments-and-seasons
+ *   GET /api/team/{teamId}/statistics?uniqueTournamentId={utid}&seasonId={sid}
+ *   GET /api/team/{teamId}/events?uniqueTournamentId={utid}&seasonId={sid}
+ *   GET /api/team/{teamId}/event-statistics?uniqueTournamentId={utid}&seasonId={sid}&statisticKey={key}
+ *
+ * The teamId == SofaScore team ID (confirmed: Barcelona = 2817 in both).
+ */
+
+const SH_BASE = "https://www.statshub.com";
+const SH_HEADERS: Record<string, string> = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  Accept: "application/json",
+  Referer: "https://www.statshub.com/",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+
+const CACHE_TTL = 30 * 60 * 1000; // 30 min
+const cache = new Map<string, { data: unknown; ts: number }>();
+
+async function shFetch(path: string): Promise<unknown> {
+  const key = path;
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.data;
+
+  const url = `${SH_BASE}${path}`;
+  const resp = await fetch(url, { headers: SH_HEADERS, signal: AbortSignal.timeout(15000) });
+  if (!resp.ok) throw new Error(`StatsHub ${resp.status} for ${path}`);
+  const json = await resp.json();
+  cache.set(key, { data: json, ts: Date.now() });
+  return json;
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface TournamentsAndSeasons {
+  [uniqueTournamentId: string]: {
+    tournamentName: string;
+    isNational: boolean;
+    seasons: Array<{ seasonId: number; seasonName: string }>;
+  };
+}
+
+interface StatsHubStatistics {
+  data: {
+    teamId: number;
+    seasonId: number;
+    matches: number;
+    awardedMatches: number;
+    goalsScored: number;
+    goalsConceded: number;
+    shots: number;
+    shotsOnTarget: number;
+    shotsOffTarget: number;
+    blockedScoringAttempt: number;
+    bigChances: number;
+    bigChancesCreated: number;
+    bigChancesMissed: number;
+    corners: number;
+    totalCrosses: number;
+    accurateCrosses: number;
+    accurateCrossesPercentage: string;
+    fouls: number;
+    yellowCards: number;
+    yellowRedCards: number;
+    redCards: number;
+    clearances: number;
+    tackles: number;
+    interceptions: number;
+    saves: number;
+    cleanSheets: number;
+    averageBallPossession: string;
+    totalPasses: number;
+    accuratePasses: number;
+    accuratePassesPercentage: string;
+    totalLongBalls: number;
+    accurateLongBalls: number;
+    accurateLongBallsPercentage: string;
+    successfulDribbles: number;
+    dribbleAttempts: number;
+    offsides: number;
+    hitWoodwork: number;
+    fastBreaks: number;
+    fastBreakGoals: number;
+    errorsLeadingToGoal: number;
+    errorsLeadingToShot?: number;
+    avgRating: string;
+    shotsFromInsideTheBox?: number;
+    shotsFromOutsideTheBox?: number;
+    throwIns?: number;
+    goalKicks?: number;
+    freeKicks?: number;
+    dispossessed?: number;
+    // Against
+    shotsAgainst: number;
+    shotsOnTargetAgainst: number;
+    cornersAgainst: number;
+    bigChancesCreatedAgainst: number;
+    bigChancesMissedAgainst: number;
+    crossesTotalAgainst: number;
+    crossesSuccessfulAgainst: number;
+    yellowCardsAgainst: number;
+    redCardsAgainst: number;
+    clearancesAgainst: number;
+    foulsAgainst?: number;
+    errorsLeadingToGoalAgainst: number;
+    tacklesAgainst: number;
+    interceptionsAgainst: number;
+    keyPassesAgainst: number;
+    shotsFromInsideTheBoxAgainst?: number;
+    shotsFromOutsideTheBoxAgainst?: number;
+    offsidesAgainst?: number;
+  };
+}
+
+interface StatsHubEvent {
+  events: {
+    id: number;
+    internalId: number;
+    slug: string;
+    status: string;
+    winnerCode: number;
+    roundInfo: number;
+    timeStartTimestamp: number;
+    homeTeamId: number;
+    awayTeamId: number;
+    homeScoreCurrent: number;
+    awayScoreCurrent: number;
+    uniqueTournamentId: number;
+    seasonId: number;
+  };
+  homeTeam: { id: number; name: string; shortname: string; slug: string };
+  awayTeam: { id: number; name: string; shortname: string; slug: string };
+}
+
+interface StatsHubEventsResponse {
+  data: StatsHubEvent[];
+}
+
+interface EventStatRow {
+  event_id: number;
+  home_team_id: number;
+  away_team_id: number;
+  time_start_timestamp: string;
+  home_score: number;
+  away_score: number;
+  home_value: string;
+  away_value: string;
+  home_team_name: string;
+  away_team_name: string;
+  home_team_slug: string;
+  away_team_slug: string;
+}
+
+interface EventStatResponse {
+  data: EventStatRow[];
+}
+
+// ─── Exported types ───────────────────────────────────────────────────────────
+
+export interface SHStatEntry {
+  label: string;
+  for: number;
+  against: number;
+  forPgm: number;
+  againstPgm: number;
+}
+
+export interface SHMatchStatRow {
+  eventId: number;
+  date: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number;
+  awayScore: number;
+  homeValue: number;
+  awayValue: number;
+  myValue: number;
+  opponentValue: number;
+  result: "W" | "D" | "L";
+}
+
+export interface SHStatHistory {
+  key: string;
+  label: string;
+  overall: number;
+  forAvg: number;
+  againstAvg: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  matches: SHMatchStatRow[];
+}
+
+export interface SHRecentMatch {
+  eventId: number;
+  date: string;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number;
+  awayScore: number;
+  isHome: boolean;
+  result: "W" | "D" | "L";
+}
+
+export interface SHTeamData {
+  teamId: number;
+  tournamentName: string;
+  seasonName: string;
+  matches: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  cleanSheets: number;
+  avgRating: number;
+  possession: number;
+  passAcc: number;
+  stats: SHStatEntry[];
+  statHistory: SHStatHistory[];
+  recentMatches: SHRecentMatch[];
+}
+
+export interface StatsHubMatchData {
+  home: SHTeamData | null;
+  away: SHTeamData | null;
+}
+
+// ─── Stat key definitions ─────────────────────────────────────────────────────
+
+// Maps label → event-statistics statisticKey
+// Keys confirmed working via API testing
+const STAT_KEYS: Array<{ label: string; key: string; category: string }> = [
+  { label: "Goals",                      key: "_goals_from_score",    category: "Attacking" },
+  { label: "Corners",                    key: "cornerKicks",          category: "Set Pieces" },
+  { label: "Shots On Goal",              key: "shotsOnGoal",          category: "Attacking" },
+  { label: "Shots Off Goal",             key: "shotsOffGoal",         category: "Attacking" },
+  { label: "Total Shots Inside Box",     key: "totalShotsInsideBox",  category: "Attacking" },
+  { label: "Total Shots Outside Box",    key: "totalShotsOutsideBox", category: "Attacking" },
+  { label: "Big Chance Created",         key: "bigChanceCreated",     category: "Attacking" },
+  { label: "Big Chance Missed",          key: "bigChanceMissed",      category: "Attacking" },
+  { label: "Big Chance Scored",          key: "bigChanceScored",      category: "Attacking" },
+  { label: "Expected Goals",             key: "expectedGoals",        category: "Attacking" },
+  { label: "Crosses",                    key: "accurateCross",        category: "Attacking" },
+  { label: "Dispossessed",               key: "dispossessed",         category: "Defensive" },
+  { label: "Goalkeeper Saves",           key: "goalkeeperSaves",      category: "Defensive" },
+  { label: "Interception Won",           key: "interceptionWon",      category: "Defensive" },
+  { label: "Errors Lead To Goal",        key: "errorsLeadToGoal",     category: "Defensive" },
+  { label: "Errors Lead To Shot",        key: "errorsLeadToShot",     category: "Defensive" },
+  { label: "Fouls",                      key: "fouls",                category: "Defensive" },
+  { label: "Yellow Cards",               key: "yellowCards",          category: "Cards" },
+  { label: "Red Cards",                  key: "redCards",             category: "Cards" },
+  { label: "Free Kicks",                 key: "freeKicks",            category: "Set Pieces" },
+  { label: "Goal Kicks",                 key: "goalKicks",            category: "Set Pieces" },
+  { label: "Throw Ins",                  key: "throwIns",             category: "Set Pieces" },
+  { label: "Possession",                 key: "ballPossession",       category: "Possession" },
+  { label: "Passes",                     key: "passes",               category: "Possession" },
+  { label: "Offsides",                   key: "offsides",             category: "Possession" },
+];
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const CUP_KEYWORDS = /champions|europa|conference|cup|copa|pokal|coupe|coppa|carabao|fa cup|league cup|supercopa|super cup|supercoupe|supercup|playoff|fa trophy/i;
+
+function candidateLeagues(ts: TournamentsAndSeasons): Array<{ utid: string; seasonId: number; tournamentName: string; seasonName: string }> {
+  const entries = Object.entries(ts);
+  if (!entries.length) return [];
+  const nonNat = entries.filter(([, v]) => !v.isNational);
+  const domestic = nonNat.filter(([, v]) => !CUP_KEYWORDS.test(v.tournamentName));
+  const pool = domestic.length ? domestic : nonNat.length ? nonNat : entries;
+  return pool.slice(0, 4).map(([utid, info]) => ({
+    utid,
+    seasonId: info.seasons[0]?.seasonId,
+    tournamentName: info.tournamentName,
+    seasonName: info.seasons[0]?.seasonName ?? "",
+  })).filter(c => c.seasonId != null) as Array<{ utid: string; seasonId: number; tournamentName: string; seasonName: string }>;
+}
+
+function pgm(total: number, matches: number): number {
+  if (!matches) return 0;
+  return Math.round((total / matches) * 100) / 100;
+}
+
+function computeRecord(events: StatsHubEvent[], teamId: number) {
+  let wins = 0, draws = 0, losses = 0;
+  for (const e of events) {
+    if (e.events.status !== "finished") continue;
+    const isHome = e.events.homeTeamId === teamId;
+    const mineScore = isHome ? e.events.homeScoreCurrent : e.events.awayScoreCurrent;
+    const theirScore = isHome ? e.events.awayScoreCurrent : e.events.homeScoreCurrent;
+    if (mineScore > theirScore) wins++;
+    else if (mineScore === theirScore) draws++;
+    else losses++;
+  }
+  return { wins, draws, losses };
+}
+
+function buildRecentMatches(
+  events: StatsHubEvent[],
+  teamId: number,
+  eventTimestamp?: number,
+  limit = 15
+): SHRecentMatch[] {
+  const cutoff = eventTimestamp ? eventTimestamp * 1000 : Date.now();
+  return events
+    .filter((e) => e.events.status === "finished" && e.events.timeStartTimestamp * 1000 < cutoff)
+    .sort((a, b) => b.events.timeStartTimestamp - a.events.timeStartTimestamp)
+    .slice(0, limit)
+    .map((e) => {
+      const isHome = e.events.homeTeamId === teamId;
+      const myScore = isHome ? e.events.homeScoreCurrent : e.events.awayScoreCurrent;
+      const theirScore = isHome ? e.events.awayScoreCurrent : e.events.homeScoreCurrent;
+      const result: "W" | "D" | "L" = myScore > theirScore ? "W" : myScore === theirScore ? "D" : "L";
+      const d = new Date(e.events.timeStartTimestamp * 1000);
+      const date = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+      return {
+        eventId: e.events.id,
+        date,
+        homeTeam: e.homeTeam.shortname || e.homeTeam.name,
+        awayTeam: e.awayTeam.shortname || e.awayTeam.name,
+        homeScore: e.events.homeScoreCurrent,
+        awayScore: e.events.awayScoreCurrent,
+        isHome,
+        result,
+      };
+    });
+}
+
+function buildStats(s: StatsHubStatistics["data"]): SHStatEntry[] {
+  const m = s.matches || 1;
+  return [
+    { label: "Goals", for: s.goalsScored, against: s.goalsConceded, forPgm: pgm(s.goalsScored, m), againstPgm: pgm(s.goalsConceded, m) },
+    { label: "Shots", for: s.shots, against: s.shotsAgainst, forPgm: pgm(s.shots, m), againstPgm: pgm(s.shotsAgainst, m) },
+    { label: "Shots On Target", for: s.shotsOnTarget, against: s.shotsOnTargetAgainst, forPgm: pgm(s.shotsOnTarget, m), againstPgm: pgm(s.shotsOnTargetAgainst, m) },
+    { label: "Corners", for: s.corners, against: s.cornersAgainst, forPgm: pgm(s.corners, m), againstPgm: pgm(s.cornersAgainst, m) },
+    { label: "Crosses", for: s.totalCrosses, against: s.crossesTotalAgainst, forPgm: pgm(s.totalCrosses, m), againstPgm: pgm(s.crossesTotalAgainst, m) },
+    { label: "Big Chance Created", for: s.bigChancesCreated, against: s.bigChancesCreatedAgainst, forPgm: pgm(s.bigChancesCreated, m), againstPgm: pgm(s.bigChancesCreatedAgainst, m) },
+    { label: "Big Chance Missed", for: s.bigChancesMissed, against: s.bigChancesMissedAgainst, forPgm: pgm(s.bigChancesMissed, m), againstPgm: pgm(s.bigChancesMissedAgainst, m) },
+    { label: "Yellow Cards", for: s.yellowCards, against: s.yellowCardsAgainst, forPgm: pgm(s.yellowCards, m), againstPgm: pgm(s.yellowCardsAgainst, m) },
+    { label: "Red Cards", for: s.redCards + s.yellowRedCards, against: s.redCardsAgainst, forPgm: pgm(s.redCards + s.yellowRedCards, m), againstPgm: pgm(s.redCardsAgainst, m) },
+    { label: "Clearances", for: s.clearances, against: s.clearancesAgainst, forPgm: pgm(s.clearances, m), againstPgm: pgm(s.clearancesAgainst, m) },
+    { label: "Fouls", for: s.fouls, against: s.foulsAgainst ?? 0, forPgm: pgm(s.fouls, m), againstPgm: pgm(s.foulsAgainst ?? 0, m) },
+    { label: "Errors → Goal", for: s.errorsLeadingToGoal, against: s.errorsLeadingToGoalAgainst, forPgm: pgm(s.errorsLeadingToGoal, m), againstPgm: pgm(s.errorsLeadingToGoalAgainst, m) },
+  ];
+}
+
+/**
+ * Fetch per-match stat history for one stat key.
+ * For "_goals_from_score" we derive values from home_score/away_score.
+ */
+async function fetchStatHistory(
+  teamId: number,
+  utid: string,
+  seasonId: number,
+  statDef: { label: string; key: string },
+  eventTimestamp?: number,
+  limit = 20
+): Promise<SHStatHistory | null> {
+  try {
+    let rows: EventStatRow[];
+
+    if (statDef.key === "_goals_from_score") {
+      // Use any working key to get the event list, then use home_score/away_score as goal values
+      const resp = await shFetch(
+        `/api/team/${teamId}/event-statistics?uniqueTournamentId=${utid}&seasonId=${seasonId}&statisticKey=fouls`
+      ) as EventStatResponse;
+      rows = (resp.data || []).map(r => ({
+        ...r,
+        home_value: String(r.home_score),
+        away_value: String(r.away_score),
+      }));
+    } else {
+      const resp = await shFetch(
+        `/api/team/${teamId}/event-statistics?uniqueTournamentId=${utid}&seasonId=${seasonId}&statisticKey=${statDef.key}`
+      ) as EventStatResponse;
+      rows = resp.data || [];
+    }
+
+    if (!rows.length) return null;
+
+    const cutoff = eventTimestamp ? eventTimestamp * 1000 : Date.now();
+
+    // Sort most recent first, filter out future events
+    const sorted = rows
+      .filter(r => parseInt(r.time_start_timestamp) * 1000 < cutoff)
+      .sort((a, b) => parseInt(b.time_start_timestamp) - parseInt(a.time_start_timestamp))
+      .slice(0, limit);
+
+    if (!sorted.length) return null;
+
+    // Compute overall (average of home+away per match total), forAvg, againstAvg, W/D/L
+    let totalFor = 0, totalAgainst = 0, wins = 0, draws = 0, losses = 0;
+
+    const matches: SHMatchStatRow[] = sorted.map(r => {
+      const isHome = r.home_team_id === teamId;
+      const homeVal = parseFloat(r.home_value) || 0;
+      const awayVal = parseFloat(r.away_value) || 0;
+      const myVal = isHome ? homeVal : awayVal;
+      const theirVal = isHome ? awayVal : homeVal;
+
+      totalFor += myVal;
+      totalAgainst += theirVal;
+
+      if (r.home_score > r.away_score) {
+        if (isHome) wins++; else losses++;
+      } else if (r.home_score < r.away_score) {
+        if (isHome) losses++; else wins++;
+      } else {
+        draws++;
+      }
+
+      const ts = parseInt(r.time_start_timestamp) * 1000;
+      const d = new Date(ts);
+      const date = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getFullYear()).slice(2)}`;
+
+      const matchResult: "W" | "D" | "L" =
+        r.home_score > r.away_score
+          ? isHome ? "W" : "L"
+          : r.home_score < r.away_score
+          ? isHome ? "L" : "W"
+          : "D";
+
+      return {
+        eventId: r.event_id,
+        date,
+        homeTeam: r.home_team_name,
+        awayTeam: r.away_team_name,
+        homeScore: r.home_score,
+        awayScore: r.away_score,
+        homeValue: homeVal,
+        awayValue: awayVal,
+        myValue: isHome ? homeVal : awayVal,
+        opponentValue: isHome ? awayVal : homeVal,
+        result: matchResult,
+      };
+    });
+
+    const n = sorted.length;
+    const forAvg = n ? Math.round((totalFor / n) * 100) / 100 : 0;
+    const againstAvg = n ? Math.round((totalAgainst / n) * 100) / 100 : 0;
+    const overall = Math.round(((totalFor + totalAgainst) / n) * 100) / 100;
+
+    return {
+      key: statDef.key,
+      label: statDef.label,
+      overall,
+      forAvg,
+      againstAvg,
+      wins,
+      draws,
+      losses,
+      matches,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Main export ──────────────────────────────────────────────────────────────
+
+export async function fetchStatsHubTeam(
+  teamId: number,
+  eventTimestamp?: number
+): Promise<SHTeamData | null> {
+  try {
+    const ts = (await shFetch(`/api/team/${teamId}/tournaments-and-seasons`)) as TournamentsAndSeasons;
+    const candidates = candidateLeagues(ts);
+    if (!candidates.length) return null;
+
+    const statsCandidates = await Promise.all(
+      candidates.map(async (c) => {
+        try {
+          const s = (await shFetch(`/api/team/${teamId}/statistics?uniqueTournamentId=${c.utid}&seasonId=${c.seasonId}`)) as StatsHubStatistics;
+          return { league: c, statsData: s.data };
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    const best = statsCandidates
+      .filter((x): x is { league: typeof candidates[0]; statsData: StatsHubStatistics["data"] } => x !== null && x.statsData?.matches > 0)
+      .sort((a, b) => b.statsData.matches - a.statsData.matches)[0];
+
+    if (!best) return null;
+
+    const { league, statsData } = best;
+
+    const eventsResp = (await shFetch(
+      `/api/team/${teamId}/events?uniqueTournamentId=${league.utid}&seasonId=${league.seasonId}`
+    )) as StatsHubEventsResponse;
+    const eventsData = eventsResp.data || [];
+
+    const { wins, draws, losses } = computeRecord(eventsData, teamId);
+    const recentMatches = buildRecentMatches(eventsData, teamId, eventTimestamp);
+
+    // Fetch per-match stat history for all defined stats (in parallel, with limit)
+    const historyResults = await Promise.all(
+      STAT_KEYS.map(def =>
+        fetchStatHistory(teamId, league.utid, league.seasonId, def, eventTimestamp, 20)
+      )
+    );
+    const statHistory = historyResults.filter((h): h is SHStatHistory => h !== null);
+
+    return {
+      teamId,
+      tournamentName: league.tournamentName,
+      seasonName: league.seasonName,
+      matches: statsData.matches,
+      wins,
+      draws,
+      losses,
+      cleanSheets: statsData.cleanSheets,
+      avgRating: parseFloat(statsData.avgRating),
+      possession: parseFloat(statsData.averageBallPossession),
+      passAcc: parseFloat(statsData.accuratePassesPercentage),
+      stats: buildStats(statsData),
+      statHistory,
+      recentMatches,
+    };
+  } catch (err) {
+    console.error(`[StatsHub] fetchStatsHubTeam(${teamId}) error:`, err);
+    return null;
+  }
+}
+
+export async function fetchStatsHubMatch(
+  homeTeamId: number,
+  awayTeamId: number,
+  eventTimestamp?: number
+): Promise<StatsHubMatchData> {
+  const [home, away] = await Promise.all([
+    fetchStatsHubTeam(homeTeamId, eventTimestamp),
+    fetchStatsHubTeam(awayTeamId, eventTimestamp),
+  ]);
+  return { home, away };
+}

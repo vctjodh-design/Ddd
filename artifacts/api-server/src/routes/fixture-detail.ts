@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { fetchStatsHubTeamHistory } from "../lib/statsHub.js";
 
 const router = Router();
 
@@ -107,40 +108,6 @@ export interface PlayerMatchStats {
   wonContest: number;
 }
 
-export interface TeamMatchStats {
-  goals: number;
-  assists: number;
-  shots: number;
-  shotsOnTarget: number;
-  shotsOffTarget: number;
-  blockedShots: number;
-  passes: number;
-  accuratePasses: number;
-  crosses: number;
-  accurateCrosses: number;
-  longBalls: number;
-  accurateLongBalls: number;
-  tackles: number;
-  interceptions: number;
-  fouls: number;
-  foulsWon: number;
-  yellowCards: number;
-  redCards: number;
-  saves: number;
-  xG: number;
-  xA: number;
-  bigChancesCreated: number;
-  keyPasses: number;
-  offsides: number;
-  dispossessed: number;
-  possessionLost: number;
-  clearances: number;
-  duelWon: number;
-  duelLost: number;
-  aerialWon: number;
-  wonContest: number;
-}
-
 function parsePlayerStats(p: RawPlayer): PlayerMatchStats {
   const shots =
     (p.onTargetScoringAttempt ?? 0) +
@@ -150,8 +117,8 @@ function parsePlayerStats(p: RawPlayer): PlayerMatchStats {
   const assists = p.assists ?? 0;
   const fouls = p.fouls ?? 0;
   const foulsWon = p.wasFouled ?? 0;
-  const xG = parseFloat(p.expectedGoals ?? "0");
-  const xA = parseFloat(p.expectedAssists ?? "0");
+  const xG = parseFloat(p.expectedGoals ?? "0") || 0;
+  const xA = parseFloat(p.expectedAssists ?? "0") || 0;
 
   return {
     minutesPlayed: p.minutesPlayed ?? 0,
@@ -193,55 +160,6 @@ function parsePlayerStats(p: RawPlayer): PlayerMatchStats {
   };
 }
 
-function aggregateTeamStats(lineup: RawPlayer[]): TeamMatchStats {
-  return lineup.reduce<TeamMatchStats>(
-    (acc, p) => {
-      const ps = parsePlayerStats(p);
-      return {
-        goals: acc.goals + ps.goals,
-        assists: acc.assists + ps.assists,
-        shots: acc.shots + ps.shots,
-        shotsOnTarget: acc.shotsOnTarget + ps.shotsOnTarget,
-        shotsOffTarget: acc.shotsOffTarget + ps.shotsOffTarget,
-        blockedShots: acc.blockedShots + ps.blockedShots,
-        passes: acc.passes + ps.passes,
-        accuratePasses: acc.accuratePasses + ps.accuratePasses,
-        crosses: acc.crosses + ps.crosses,
-        accurateCrosses: acc.accurateCrosses + ps.accurateCrosses,
-        longBalls: acc.longBalls + ps.longBalls,
-        accurateLongBalls: acc.accurateLongBalls + ps.accurateLongBalls,
-        tackles: acc.tackles + ps.tackles,
-        interceptions: acc.interceptions + ps.interceptions,
-        fouls: acc.fouls + ps.fouls,
-        foulsWon: acc.foulsWon + ps.foulsWon,
-        yellowCards: acc.yellowCards + (ps.yellowCard ? 1 : 0),
-        redCards: acc.redCards + (ps.redCard ? 1 : 0),
-        saves: acc.saves + ps.saves,
-        xG: acc.xG + ps.xG,
-        xA: acc.xA + ps.xA,
-        bigChancesCreated: acc.bigChancesCreated + ps.bigChancesCreated,
-        keyPasses: acc.keyPasses + ps.keyPasses,
-        offsides: acc.offsides + ps.offsides,
-        dispossessed: acc.dispossessed + ps.dispossessed,
-        possessionLost: acc.possessionLost + ps.possessionLost,
-        clearances: acc.clearances + ps.clearances,
-        duelWon: acc.duelWon + ps.duelWon,
-        duelLost: acc.duelLost + ps.duelLost,
-        aerialWon: acc.aerialWon + ps.aerialWon,
-        wonContest: acc.wonContest + ps.wonContest,
-      };
-    },
-    {
-      goals: 0, assists: 0, shots: 0, shotsOnTarget: 0, shotsOffTarget: 0,
-      blockedShots: 0, passes: 0, accuratePasses: 0, crosses: 0, accurateCrosses: 0,
-      longBalls: 0, accurateLongBalls: 0, tackles: 0, interceptions: 0, fouls: 0,
-      foulsWon: 0, yellowCards: 0, redCards: 0, saves: 0, xG: 0, xA: 0,
-      bigChancesCreated: 0, keyPasses: 0, offsides: 0, dispossessed: 0,
-      possessionLost: 0, clearances: 0, duelWon: 0, duelLost: 0, aerialWon: 0, wonContest: 0,
-    }
-  );
-}
-
 function processLastGames(games: RawGame[], teamId: number) {
   const sorted = [...games].sort(
     (a, b) => b.events.timeStartTimestamp - a.events.timeStartTimestamp
@@ -263,10 +181,6 @@ function processLastGames(games: RawGame[], teamId: number) {
     const ev = game.events;
     const isHome = ev.homeTeamId === teamId;
     const ourLineup = (isHome ? game.homeTeamLineup : game.awayTeamLineup) ?? [];
-    const oppLineup = (isHome ? game.awayTeamLineup : game.homeTeamLineup) ?? [];
-
-    const teamStats = aggregateTeamStats(ourLineup);
-    const oppStats = aggregateTeamStats(oppLineup);
 
     matchList.push({
       eventId: ev.id,
@@ -277,8 +191,6 @@ function processLastGames(games: RawGame[], teamId: number) {
       awayScore: ev.awayScoreCurrent ?? 0,
       tournamentName: ev.tournamentName ?? "",
       isHome,
-      teamStats,
-      oppStats,
     });
 
     ourLineup.forEach((p: RawPlayer) => {
@@ -342,8 +254,10 @@ router.get("/fixture/:id", async (req, res) => {
 
     const homeTeamId = homeTeamRaw.id as number;
     const awayTeamId = awayTeamRaw.id as number;
+    const eventTimestamp = ev.timeStartTimestamp as number | undefined;
 
-    const [homeGamesRes, awayGamesRes] = await Promise.all([
+    // Fetch last-games (for player stats) + statsHub history (for team stat tabs) in parallel
+    const [homeGamesRes, awayGamesRes, homeStatsHub, awayStatsHub] = await Promise.all([
       fetch(
         `https://www.statshub.com/api/team/${homeTeamId}/last-games?page=1&limit=20`,
         { headers: STATSHUB_HEADERS }
@@ -352,6 +266,8 @@ router.get("/fixture/:id", async (req, res) => {
         `https://www.statshub.com/api/team/${awayTeamId}/last-games?page=1&limit=20`,
         { headers: STATSHUB_HEADERS }
       ),
+      fetchStatsHubTeamHistory(homeTeamId, eventTimestamp),
+      fetchStatsHubTeamHistory(awayTeamId, eventTimestamp),
     ]);
 
     const [homeGamesJson, awayGamesJson] = await Promise.all([
@@ -394,7 +310,19 @@ router.get("/fixture/:id", async (req, res) => {
       winnerCode: (ev.winnerCode as number | null) ?? null,
     };
 
-    res.json({ fixture, home, away });
+    res.json({
+      fixture,
+      home: {
+        ...home,
+        possession: homeStatsHub?.possession ?? 0,
+        statHistory: homeStatsHub?.statHistory ?? [],
+      },
+      away: {
+        ...away,
+        possession: awayStatsHub?.possession ?? 0,
+        statHistory: awayStatsHub?.statHistory ?? [],
+      },
+    });
   } catch (err) {
     req.log.error({ err }, "Failed to fetch fixture detail");
     res.status(500).json({ error: "Failed to fetch fixture detail" });
