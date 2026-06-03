@@ -81,12 +81,10 @@ export interface SHTeamStatHistory {
   statHistory: SHStatHistory[];
 }
 
-// Maps label → event-statistics statisticKey
-const TEAM_STAT_KEYS: Array<{ label: string; key: string }> = [
+// Real API keys fetched directly from event-statistics
+const DIRECT_STAT_KEYS: Array<{ label: string; key: string }> = [
   { label: "Goals",                   key: "_goals_from_score" },
   { label: "Corners",                 key: "cornerKicks" },
-  { label: "Shots",                   key: "shots" },
-  { label: "Cards",                   key: "_cards" },
   { label: "Crosses",                 key: "accurateCross" },
   { label: "Big Chance Created",      key: "bigChanceCreated" },
   { label: "Big Chance Missed",       key: "bigChanceMissed" },
@@ -142,20 +140,16 @@ async function fetchStatHistory(
   try {
     let rows: EventStatRow[];
 
-    if (statDef.key === "_goals_from_score" || statDef.key === "_cards") {
+    if (statDef.key === "_goals_from_score") {
+      // Reuse the fouls endpoint to get match list, then substitute score as value
       const resp = await shFetch(
         `/api/team/${teamId}/event-statistics?uniqueTournamentId=${utid}&seasonId=${seasonId}&statisticKey=fouls`
       ) as EventStatResponse;
-      if (statDef.key === "_goals_from_score") {
-        rows = (resp.data || []).map(r => ({
-          ...r,
-          home_value: String(r.home_score),
-          away_value: String(r.away_score),
-        }));
-      } else {
-        // _cards: not individually trackable per-match from event-stats, skip
-        return null;
-      }
+      rows = (resp.data || []).map(r => ({
+        ...r,
+        home_value: String(r.home_score),
+        away_value: String(r.away_score),
+      }));
     } else {
       const resp = await shFetch(
         `/api/team/${teamId}/event-statistics?uniqueTournamentId=${utid}&seasonId=${seasonId}&statisticKey=${statDef.key}`
@@ -211,6 +205,36 @@ async function fetchStatHistory(
   }
 }
 
+/** Merge two stat histories by event ID, summing their values */
+function mergeStatHistories(
+  label: string,
+  key: string,
+  a: SHStatHistory | null,
+  b: SHStatHistory | null
+): SHStatHistory | null {
+  if (!a && !b) return null;
+  const base = a ?? b!;
+  if (!a || !b) return { key, label, matches: base.matches };
+
+  // Build map from b by eventId
+  const bMap = new Map<number, SHMatchStatRow>();
+  for (const m of b.matches) bMap.set(m.eventId, m);
+
+  const matches = a.matches.map(m => {
+    const bMatch = bMap.get(m.eventId);
+    if (!bMatch) return m;
+    return {
+      ...m,
+      homeValue: m.homeValue + bMatch.homeValue,
+      awayValue: m.awayValue + bMatch.awayValue,
+      myValue: m.myValue + bMatch.myValue,
+      opponentValue: m.opponentValue + bMatch.opponentValue,
+    };
+  });
+
+  return { key, label, matches };
+}
+
 export async function fetchStatsHubTeamHistory(
   teamId: number,
   eventTimestamp?: number
@@ -248,14 +272,55 @@ export async function fetchStatsHubTeamHistory(
       possession = parseFloat(statsResp.data?.averageBallPossession ?? "0") || 0;
     } catch { /* ignore */ }
 
-    // Fetch per-match stat history for all team stat keys in parallel
+    // Fetch all direct stat keys in parallel
     const historyResults = await Promise.all(
-      TEAM_STAT_KEYS.map(def =>
+      DIRECT_STAT_KEYS.map(def =>
         fetchStatHistory(teamId, utid, seasonId, def, eventTimestamp, 20)
       )
     );
 
-    const statHistory = historyResults.filter((h): h is SHStatHistory => h !== null);
+    // Build a map for easy lookup
+    const historyMap = new Map<string, SHStatHistory>();
+    for (let i = 0; i < DIRECT_STAT_KEYS.length; i++) {
+      const h = historyResults[i];
+      if (h) historyMap.set(DIRECT_STAT_KEYS[i].label, h);
+    }
+
+    // Compute derived stats
+    // "Shots" = Inside Box + Outside Box
+    const shotsComputed = mergeStatHistories(
+      "Shots", "_computed_shots",
+      historyMap.get("Total Shots Inside Box") ?? null,
+      historyMap.get("Total Shots Outside Box") ?? null
+    );
+    if (shotsComputed) historyMap.set("Shots", shotsComputed);
+
+    // "Cards" = Yellow Cards + Red Cards
+    const cardsComputed = mergeStatHistories(
+      "Cards", "_computed_cards",
+      historyMap.get("Yellow Cards") ?? null,
+      historyMap.get("Red Cards") ?? null
+    );
+    if (cardsComputed) historyMap.set("Cards", cardsComputed);
+
+    // Build final statHistory in the order the frontend expects (TEAM_STAT_TABS order)
+    const ORDERED_LABELS = [
+      "Goals", "Corners", "Shots", "Cards", "Crosses",
+      "Big Chance Created", "Big Chance Missed", "Big Chance Scored",
+      "Expected Goals", "Shots On Goal", "Shots Off Goal",
+      "Total Shots Inside Box", "Total Shots Outside Box",
+      "Total Clearance", "Dispossessed", "Errors Lead To Goal", "Errors Lead To Shot",
+      "Fouls", "Goalkeeper Saves", "Interception Won", "Tackles",
+      "Free Kicks", "Goal Kicks", "Throw Ins",
+      "Possession", "Offsides", "Passes", "Touches In Opp Box",
+      "Red Cards", "Yellow Cards",
+    ];
+
+    const statHistory: SHStatHistory[] = [];
+    for (const label of ORDERED_LABELS) {
+      const h = historyMap.get(label);
+      if (h) statHistory.push(h);
+    }
 
     return { teamId, possession, statHistory };
   } catch (err) {
