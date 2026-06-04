@@ -5,10 +5,22 @@ import type { FixturesResponse, LeagueGroup, Fixture, Team } from "@workspace/ap
 const router = Router();
 
 const STATSHUB_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  Accept: "application/json, */*",
-  Referer: "https://www.statshub.com/",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Accept": "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br, zstd",
+  "Cache-Control": "no-cache",
+  "Pragma": "no-cache",
+  "Origin": "https://www.statshub.com",
+  "Referer": "https://www.statshub.com/football/fixtures",
+  "sec-ch-ua": '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"Windows"',
+  "Sec-Fetch-Dest": "empty",
+  "Sec-Fetch-Mode": "cors",
+  "Sec-Fetch-Site": "same-origin",
+  "Connection": "keep-alive",
+  "DNT": "1",
 };
 
 function formatDate(date: Date): string {
