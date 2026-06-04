@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { format, addDays, startOfDay, isSameDay } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity, Clock, ShieldAlert,
-  ChevronLeft, ChevronRight, CalendarDays, X,
+  ChevronLeft, ChevronRight, CalendarDays, X, Search,
 } from "lucide-react";
 import {
   useGetFixtures,
@@ -14,6 +14,7 @@ import {
 } from "@workspace/api-client-react";
 
 const TODAY = startOfDay(new Date());
+const SESSION_KEY = "nexus_home_state";
 
 const MONTHS = [
   "January","February","March","April","May","June",
@@ -21,7 +22,7 @@ const MONTHS = [
 ];
 const DOW = ["Su","Mo","Tu","We","Th","Fr","Sa"];
 
-// ─── Inline cyberpunk calendar ────────────────────────────────────────────────
+// ─── Inline cyberpunk calendar ─────────────────────────────────────────────
 
 interface CalendarPopupProps {
   selected: Date;
@@ -34,7 +35,6 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
   const [viewMonth, setViewMonth] = useState(selected.getMonth());
   const overlayRef = useRef<HTMLDivElement>(null);
 
-  // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (overlayRef.current && !overlayRef.current.contains(e.target as Node)) onClose();
@@ -43,7 +43,6 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
     return () => document.removeEventListener("mousedown", handler);
   }, [onClose]);
 
-  // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     document.addEventListener("keydown", handler);
@@ -59,8 +58,7 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
     else setViewMonth(m => m + 1);
   };
 
-  // Build calendar grid
-  const firstDow = new Date(viewYear, viewMonth, 1).getDay();
+  const firstDow    = new Date(viewYear, viewMonth, 1).getDay();
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
   const daysInPrev  = new Date(viewYear, viewMonth, 0).getDate();
 
@@ -80,7 +78,6 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
         ref={overlayRef}
         className="bg-[#0a0f1a] border border-primary/50 shadow-[0_0_40px_rgba(0,255,255,0.15)] w-full max-w-sm"
       >
-        {/* Title bar */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-primary/30 bg-primary/5">
           <span className="text-xs font-mono uppercase tracking-widest text-primary">Select Date</span>
           <button onClick={onClose} className="text-muted-foreground hover:text-primary transition-colors">
@@ -89,7 +86,6 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
         </div>
 
         <div className="p-4 space-y-3">
-          {/* Month / Year navigation */}
           <div className="flex items-center justify-between gap-2">
             <button
               onClick={prevMonth}
@@ -97,19 +93,14 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-
             <div className="flex items-center gap-2 flex-1 justify-center">
-              {/* Month select */}
               <select
                 value={viewMonth}
                 onChange={e => setViewMonth(Number(e.target.value))}
                 className="bg-card border border-border text-foreground text-xs font-mono uppercase tracking-wide px-2 py-1 hover:border-primary/50 focus:outline-none focus:border-primary cursor-pointer"
               >
-                {MONTHS.map((m, i) => (
-                  <option key={i} value={i}>{m}</option>
-                ))}
+                {MONTHS.map((m, i) => <option key={i} value={i}>{m}</option>)}
               </select>
-              {/* Year select */}
               <select
                 value={viewYear}
                 onChange={e => setViewYear(Number(e.target.value))}
@@ -118,7 +109,6 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
                 {years.map(y => <option key={y} value={y}>{y}</option>)}
               </select>
             </div>
-
             <button
               onClick={nextMonth}
               className="w-8 h-8 flex items-center justify-center border border-border hover:border-primary/60 hover:text-primary text-muted-foreground transition-all"
@@ -127,7 +117,6 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
             </button>
           </div>
 
-          {/* Day-of-week headers */}
           <div className="grid grid-cols-7 gap-0.5">
             {DOW.map(d => (
               <div key={d} className="text-center text-[10px] font-mono text-muted-foreground py-1 uppercase tracking-widest">
@@ -136,19 +125,16 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
             ))}
           </div>
 
-          {/* Day cells */}
           <div className="grid grid-cols-7 gap-0.5">
             {cells.map(({ date, current }, i) => {
               const isSelected = isSameDay(date, selected);
               const isToday    = isSameDay(date, TODAY);
               const isFuture   = date > TODAY;
-
               return (
                 <button
                   key={i}
                   onClick={() => { onSelect(date); onClose(); }}
-                  className={`
-                    h-9 flex items-center justify-center text-xs font-mono transition-all
+                  className={`h-9 flex items-center justify-center text-xs font-mono transition-all
                     ${!current ? "opacity-25" : ""}
                     ${isSelected
                       ? "bg-primary text-black font-bold shadow-[0_0_12px_rgba(0,255,255,0.5)]"
@@ -157,8 +143,7 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
                       : isFuture
                       ? "text-foreground/70 hover:bg-primary/10 hover:text-primary"
                       : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
-                    }
-                  `}
+                    }`}
                 >
                   {date.getDate()}
                 </button>
@@ -166,7 +151,6 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
             })}
           </div>
 
-          {/* Quick jumps */}
           <div className="flex gap-2 pt-1 border-t border-border/40">
             {[
               { label: "Yesterday", date: addDays(TODAY, -1) },
@@ -192,14 +176,38 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
   );
 }
 
-// ─── Main home page ───────────────────────────────────────────────────────────
+// ─── Main home page ────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [selectedDate, setSelectedDate] = useState<Date>(TODAY);
-  const [windowOffset, setWindowOffset] = useState(0);
-  const [showCalendar, setShowCalendar] = useState(false);
-  const queryClient = useQueryClient();
+  // Restore state from sessionStorage if coming back from a fixture
+  const restoredRef = useRef<{ date: string; scrollY: number } | null>(null);
+  if (restoredRef.current === null) {
+    try {
+      const raw = sessionStorage.getItem(SESSION_KEY);
+      if (raw) {
+        restoredRef.current = JSON.parse(raw);
+        sessionStorage.removeItem(SESSION_KEY);
+      }
+    } catch { /* ignore */ }
+  }
 
+  const restored = restoredRef.current;
+  const initialDate = restored
+    ? startOfDay(new Date(restored.date))
+    : TODAY;
+  const initialOffset = restored
+    ? Math.round((initialDate.getTime() - TODAY.getTime()) / 86400000)
+    : 0;
+
+  const [selectedDate, setSelectedDate] = useState<Date>(initialDate);
+  const [windowOffset, setWindowOffset] = useState(initialOffset);
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [searchQuery, setSearchQuery]   = useState("");
+  const [pendingScrollY, setPendingScrollY] = useState<number | null>(
+    restored ? restored.scrollY : null
+  );
+
+  const queryClient = useQueryClient();
   const formattedDate = format(selectedDate, "yyyy-MM-dd");
   const [, navigate] = useLocation();
 
@@ -218,7 +226,15 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [formattedDate, queryClient]);
 
-  // 7-day strip centered on windowOffset (days from TODAY)
+  // Scroll restoration: after data loads, jump to the saved Y position
+  useLayoutEffect(() => {
+    if (!isLoading && pendingScrollY !== null) {
+      window.scrollTo({ top: pendingScrollY, behavior: "instant" });
+      setPendingScrollY(null);
+    }
+  }, [isLoading, pendingScrollY]);
+
+  // 7-day strip
   const dates = useMemo(() => {
     const arr: Date[] = [];
     for (let i = windowOffset - 3; i <= windowOffset + 3; i++) arr.push(addDays(TODAY, i));
@@ -230,7 +246,35 @@ export default function Home() {
     setSelectedDate(d);
     const diff = Math.round((d.getTime() - TODAY.getTime()) / 86400000);
     setWindowOffset(diff);
+    setSearchQuery("");
   };
+
+  // Navigate to fixture, persisting current date + scroll so we can come back
+  const handleFixtureClick = (fixtureId: number) => {
+    try {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+        date: formattedDate,
+        scrollY: window.scrollY,
+      }));
+    } catch { /* ignore */ }
+    navigate(`/fixture/${fixtureId}`);
+  };
+
+  // Filter leagues / fixtures by search query
+  const filteredLeagues = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q || !fixturesResponse?.leagues) return fixturesResponse?.leagues ?? [];
+    return fixturesResponse.leagues
+      .map(league => ({
+        ...league,
+        fixtures: league.fixtures.filter(
+          f =>
+            f.homeTeam.name.toLowerCase().includes(q) ||
+            f.awayTeam.name.toLowerCase().includes(q)
+        ),
+      }))
+      .filter(league => league.fixtures.length > 0);
+  }, [fixturesResponse?.leagues, searchQuery]);
 
   const diffFromToday = Math.round((startOfDay(selectedDate).getTime() - TODAY.getTime()) / 86400000);
   const isOnStrip = diffFromToday >= windowOffset - 3 && diffFromToday <= windowOffset + 3;
@@ -264,8 +308,6 @@ export default function Home() {
       {/* ── Date navigation ── */}
       <div className="container mx-auto px-4 py-4">
         <div className="flex flex-col items-center gap-3">
-
-          {/* Strip + controls row */}
           <div className="flex items-center gap-2">
             <button
               onClick={() => setWindowOffset(o => o - 7)}
@@ -313,7 +355,6 @@ export default function Home() {
               <ChevronRight className="w-4 h-4" />
             </button>
 
-            {/* Calendar picker button */}
             <button
               onClick={() => setShowCalendar(true)}
               className="flex-shrink-0 w-9 h-9 flex items-center justify-center border border-border text-muted-foreground hover:border-primary/60 hover:text-primary transition-all bg-card/30"
@@ -324,7 +365,6 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Jump to today / show selected date if off-strip */}
           <div className="flex items-center gap-3">
             {windowOffset !== 0 && (
               <button
@@ -338,6 +378,26 @@ export default function Home() {
               <div className="text-[10px] font-mono text-primary/70 border border-primary/20 px-3 py-1">
                 Viewing: {format(selectedDate, "EEE dd MMM yyyy")}
               </div>
+            )}
+          </div>
+
+          {/* ── Search bar ── */}
+          <div className="w-full max-w-md relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+            <input
+              type="text"
+              placeholder="Filter by team name..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="w-full bg-card/30 border border-border text-foreground text-xs font-mono pl-8 pr-8 py-2 placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/60 focus:bg-card/50 transition-all"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-primary transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
             )}
           </div>
         </div>
@@ -361,7 +421,7 @@ export default function Home() {
         )}
       </AnimatePresence>
 
-      {/* ── Main Content ── */}
+      {/* ── Main content ── */}
       <main className="container mx-auto px-4 pb-20 flex-1">
         {isLoading ? (
           <div className="space-y-6">
@@ -381,24 +441,30 @@ export default function Home() {
             <h2 className="text-xl font-mono uppercase font-bold mb-2">System Error</h2>
             <p className="text-sm opacity-80">Failed to retrieve fixture data stream. Connection terminated.</p>
           </div>
-        ) : !fixturesResponse?.leagues || fixturesResponse.leagues.length === 0 ? (
+        ) : filteredLeagues.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-64 border border-border bg-card/20 p-8 text-center">
             <Clock className="w-12 h-12 mb-4 text-muted-foreground opacity-50" />
-            <h2 className="text-xl font-mono uppercase font-bold mb-2 text-muted-foreground">No Targets Acquired</h2>
-            <p className="text-sm text-muted-foreground/70">No fixture data available for the selected date.</p>
+            <h2 className="text-xl font-mono uppercase font-bold mb-2 text-muted-foreground">
+              {searchQuery ? "No Matches Found" : "No Targets Acquired"}
+            </h2>
+            <p className="text-sm text-muted-foreground/70">
+              {searchQuery
+                ? `No fixtures match "${searchQuery}" on this date.`
+                : "No fixture data available for the selected date."}
+            </p>
           </div>
         ) : (
           <div className="space-y-8">
             <AnimatePresence>
-              {fixturesResponse.leagues.map((league, leagueIdx) => (
+              {filteredLeagues.map((league, leagueIdx) => (
                 <motion.div
                   key={league.leagueId}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: leagueIdx * 0.05 }}
+                  transition={{ delay: leagueIdx * 0.04 }}
                   className="border border-border/50 bg-card/40 relative overflow-hidden"
                 >
-                  {/* League Header */}
+                  {/* League header */}
                   <div className="border-b border-border/50 bg-card p-3 flex items-center gap-3">
                     {league.primaryColor && (
                       <div className="w-1 h-full absolute left-0 top-0" style={{ backgroundColor: league.primaryColor }} />
@@ -412,17 +478,17 @@ export default function Home() {
                   {/* Fixtures */}
                   <div className="divide-y divide-border/30">
                     {league.fixtures.map(fixture => {
-                      const isLive       = fixture.status === "inprogress";
-                      const isFinished   = fixture.status === "finished";
-                      const isPostponed  = fixture.status === "postponed";
-                      const isCancelled  = fixture.status === "cancelled";
-                      const homeWinner   = fixture.winnerCode === 100;
-                      const awayWinner   = fixture.winnerCode === 200;
+                      const isLive      = fixture.status === "inprogress";
+                      const isFinished  = fixture.status === "finished";
+                      const isPostponed = fixture.status === "postponed";
+                      const isCancelled = fixture.status === "cancelled";
+                      const homeWinner  = fixture.winnerCode === 100;
+                      const awayWinner  = fixture.winnerCode === 200;
 
                       return (
                         <div
                           key={fixture.id}
-                          onClick={() => navigate(`/fixture/${fixture.id}`)}
+                          onClick={() => handleFixtureClick(fixture.id)}
                           className={`p-4 flex items-center justify-between transition-colors hover:bg-white/[0.03] cursor-pointer ${
                             isFinished || isPostponed || isCancelled ? "opacity-60" : ""
                           } ${isLive ? "bg-primary/5" : ""}`}
