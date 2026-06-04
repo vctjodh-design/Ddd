@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import Home from "@/pages/home";
 import FixtureDetail from "@/pages/fixture-detail";
+import DatabasePage from "@/pages/database";
 
 const queryClient = new QueryClient();
 
@@ -13,6 +14,7 @@ function Router() {
     <Switch>
       <Route path="/" component={Home} />
       <Route path="/fixture/:id" component={FixtureDetail} />
+      <Route path="/database" component={DatabasePage} />
       <Route component={NotFound} />
     </Switch>
   );

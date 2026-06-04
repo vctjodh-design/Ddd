@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity, Clock, ShieldAlert,
   ChevronLeft, ChevronRight, CalendarDays, X, Search,
+  Upload, Database as DatabaseIcon, Loader2,
 } from "lucide-react";
 import {
   useGetFixtures,
@@ -176,6 +177,245 @@ function CalendarPopup({ selected, onSelect, onClose }: CalendarPopupProps) {
   );
 }
 
+// ─── Slug helper ────────────────────────────────────────────────────────────
+
+function toSlug(s: string) {
+  return s.toLowerCase().replace(/[^\w\s-]/g, "").replace(/[\s_]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+// ─── Bulk Upload Modal ───────────────────────────────────────────────────────
+
+interface JobStatus {
+  id: string;
+  status: "pending" | "running" | "complete" | "failed";
+  totalMatches: number;
+  processed: number;
+  stored: number;
+  skipped: number;
+  currentMatch: string | null;
+  errorMessage: string | null;
+  logs: string[];
+}
+
+interface UploadModalProps {
+  leagueName: string;
+  countryName: string;
+  suggestedPath: string;
+  onClose: () => void;
+}
+
+function BulkUploadModal({ leagueName, countryName, suggestedPath, onClose }: UploadModalProps) {
+  const currentYear = new Date().getFullYear();
+  const years = Array.from({ length: 8 }, (_, i) => currentYear - i);
+
+  const [path, setPath]   = useState(suggestedPath);
+  const [year, setYear]   = useState(currentYear - 1);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [job, setJob]     = useState<JobStatus | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const logsEndRef = React.useRef<HTMLDivElement>(null);
+
+  const isDone = job?.status === "complete" || job?.status === "failed";
+
+  useEffect(() => {
+    if (!jobId) return;
+    const poll = async () => {
+      try {
+        const r = await fetch(`/api/bulk/status/${jobId}`);
+        if (r.ok) setJob(await r.json());
+      } catch {}
+    };
+    poll();
+    const id = setInterval(poll, 2500);
+    return () => clearInterval(id);
+  }, [jobId]);
+
+  useEffect(() => {
+    if (isDone) return;
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [job?.logs?.length, isDone]);
+
+  const start = async () => {
+    if (!path.trim()) { setError("OddsPortal path is required"); return; }
+    setError(null);
+    setStarting(true);
+    try {
+      const r = await fetch("/api/bulk/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leagueName, countryName, oddsPortalPath: path.trim(), year }),
+      });
+      if (!r.ok) {
+        const j = await r.json() as { error?: string };
+        throw new Error(j.error ?? `HTTP ${r.status}`);
+      }
+      const d = await r.json() as { jobId: string };
+      setJobId(d.jobId);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const pct = job && job.totalMatches > 0
+    ? Math.round((job.processed / job.totalMatches) * 100)
+    : 0;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="bg-[#0a0f1a] border border-primary/50 shadow-[0_0_40px_rgba(0,255,255,0.15)] w-full max-w-lg"
+      >
+        {/* Header */}
+        <div className="border-b border-border/50 p-4 flex items-center justify-between">
+          <div>
+            <div className="text-sm font-mono font-bold text-primary tracking-widest uppercase flex items-center gap-2">
+              <Upload className="w-4 h-4" /> Bulk Upload
+            </div>
+            <div className="text-[11px] text-muted-foreground font-mono mt-0.5">
+              {countryName} — {leagueName}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          {!jobId ? (
+            <>
+              {/* OddsPortal path */}
+              <div>
+                <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1.5">
+                  OddsPortal Path
+                  <span className="ml-1 text-muted-foreground/50">(country/league-slug)</span>
+                </label>
+                <input
+                  type="text"
+                  value={path}
+                  onChange={e => setPath(e.target.value)}
+                  placeholder="e.g. england/premier-league"
+                  className="w-full bg-card/30 border border-border text-foreground text-xs font-mono px-3 py-2 placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/60 transition-all"
+                />
+                <div className="text-[10px] text-muted-foreground/50 font-mono mt-1">
+                  URL pattern: oddsportal.com/football/<span className="text-primary/60">{path || "country/league"}</span>-{year}/results/
+                </div>
+              </div>
+
+              {/* Year */}
+              <div>
+                <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1.5">Year</label>
+                <select
+                  value={year}
+                  onChange={e => setYear(parseInt(e.target.value))}
+                  className="w-full bg-card/30 border border-border text-foreground text-xs font-mono px-3 py-2 focus:outline-none focus:border-primary/60 transition-all"
+                >
+                  {years.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+              </div>
+
+              {error && (
+                <div className="text-xs text-destructive font-mono border border-destructive/30 bg-destructive/5 px-3 py-2">
+                  {error}
+                </div>
+              )}
+
+              <div className="flex items-center gap-2 text-[10px] text-muted-foreground/60 font-mono border border-border/30 bg-card/20 px-3 py-2">
+                <span className="text-primary/60">ℹ</span>
+                Scrapes OddsPortal results + StatsHub stats. Skips teams with {"<"}20 historical matches.
+              </div>
+
+              <button
+                onClick={start}
+                disabled={starting || !path.trim()}
+                className="w-full py-2.5 font-mono text-xs uppercase tracking-widest border border-primary text-primary hover:bg-primary/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {starting ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Starting…</> : "⬆ Start Upload"}
+              </button>
+            </>
+          ) : (
+            <>
+              {/* Progress */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs font-mono">
+                  <span className={
+                    job?.status === "complete" ? "text-green-400" :
+                    job?.status === "failed"   ? "text-destructive" :
+                    "text-primary animate-pulse"
+                  }>
+                    {job?.status?.toUpperCase() ?? "STARTING…"}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {job ? `${job.stored} stored · ${job.skipped} skipped` : ""}
+                  </span>
+                </div>
+
+                {job && job.totalMatches > 0 && (
+                  <div>
+                    <div className="flex justify-between text-[10px] font-mono text-muted-foreground mb-1">
+                      <span>{job.processed} / {job.totalMatches} processed</span>
+                      <span>{pct}%</span>
+                    </div>
+                    <div className="h-1.5 w-full bg-border/40 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-primary transition-all duration-500 shadow-[0_0_6px_rgba(0,255,255,0.5)]"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {job?.currentMatch && !isDone && (
+                  <div className="text-[10px] font-mono text-primary/70 truncate">⬡ {job.currentMatch}</div>
+                )}
+
+                {job?.errorMessage && (
+                  <div className="text-[10px] font-mono text-destructive border border-destructive/30 bg-destructive/5 px-2 py-1.5">
+                    {job.errorMessage}
+                  </div>
+                )}
+
+                {/* Log */}
+                <div className="h-48 overflow-y-auto bg-black/40 border border-border/30 p-2 font-mono text-[10px] text-muted-foreground space-y-0.5">
+                  {(!job?.logs || job.logs.length === 0)
+                    ? <div className="text-center py-8 opacity-40">Waiting for log output…</div>
+                    : job.logs.map((line, i) => (
+                      <div key={i} className={
+                        line.includes("✓") ? "text-green-400/80" :
+                        line.includes("⚠") ? "text-yellow-400/80" :
+                        line.includes("❌") || line.includes("Skip") ? "text-destructive/70" :
+                        line.includes("✅") ? "text-green-400" :
+                        "text-muted-foreground/70"
+                      }>{line}</div>
+                    ))
+                  }
+                  <div ref={logsEndRef} />
+                </div>
+
+                {isDone && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={onClose}
+                      className="flex-1 py-2 font-mono text-xs uppercase tracking-widest border border-border text-muted-foreground hover:border-primary/50 hover:text-foreground transition-all"
+                    >
+                      Close
+                    </button>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 // ─── Main home page ────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -203,6 +443,9 @@ export default function Home() {
   const [windowOffset, setWindowOffset] = useState(initialOffset);
   const [showCalendar, setShowCalendar] = useState(false);
   const [searchQuery, setSearchQuery]   = useState("");
+  const [uploadModal, setUploadModal]   = useState<{
+    leagueName: string; countryName: string; suggestedPath: string;
+  } | null>(null);
   const [pendingScrollY, setPendingScrollY] = useState<number | null>(
     restored ? restored.scrollY : null
   );
@@ -301,6 +544,15 @@ export default function Home() {
               <span className="text-muted-foreground uppercase">Target:</span>
               <span className="text-primary">{formattedDate}</span>
             </div>
+            <div className="w-px h-4 bg-border hidden sm:block" />
+            <button
+              onClick={() => navigate("/database")}
+              className="hidden sm:flex items-center gap-1.5 text-muted-foreground hover:text-primary transition-colors uppercase tracking-widest"
+              title="View stored match database"
+            >
+              <DatabaseIcon className="w-3.5 h-3.5" />
+              <span>DB</span>
+            </button>
           </div>
         </div>
       </header>
@@ -403,6 +655,26 @@ export default function Home() {
         </div>
       </div>
 
+      {/* ── Bulk upload modal ── */}
+      <AnimatePresence>
+        {uploadModal && (
+          <motion.div
+            key="upload-modal"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+          >
+            <BulkUploadModal
+              leagueName={uploadModal.leagueName}
+              countryName={uploadModal.countryName}
+              suggestedPath={uploadModal.suggestedPath}
+              onClose={() => setUploadModal(null)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* ── Calendar popup ── */}
       <AnimatePresence>
         {showCalendar && (
@@ -470,9 +742,24 @@ export default function Home() {
                       <div className="w-1 h-full absolute left-0 top-0" style={{ backgroundColor: league.primaryColor }} />
                     )}
                     <span className="text-xs ml-2 opacity-80 font-sans">{league.countryFlag}</span>
-                    <h2 className="text-sm font-mono font-bold tracking-widest uppercase text-foreground/90">
+                    <h2 className="text-sm font-mono font-bold tracking-widest uppercase text-foreground/90 flex-1">
                       {league.countryName} — {league.leagueName}
                     </h2>
+                    <button
+                      onClick={e => {
+                        e.stopPropagation();
+                        setUploadModal({
+                          leagueName: league.leagueName,
+                          countryName: league.countryName,
+                          suggestedPath: `${toSlug(league.countryName)}/${toSlug(league.leagueName)}`,
+                        });
+                      }}
+                      className="flex-shrink-0 flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/60 hover:text-primary border border-border/40 hover:border-primary/50 px-2 py-1 transition-all"
+                      title="Bulk upload historical data for this league"
+                    >
+                      <Upload className="w-3 h-3" />
+                      Upload
+                    </button>
                   </div>
 
                   {/* Fixtures */}
