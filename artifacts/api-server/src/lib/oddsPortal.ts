@@ -35,21 +35,44 @@ const OP_API_HEADERS: Record<string, string> = {
   "Referer": "https://www.oddsportal.com/",
 };
 
-async function opFetch(url: string, isApi = false): Promise<string | null> {
+/** Fetch a URL from OddsPortal. Returns null on failure.
+ *  Also returns a blockDetected flag so callers can distinguish
+ *  a Cloudflare silent-drop (404 + empty body) from a real missing page. */
+async function opFetch(
+  url: string,
+  isApi = false
+): Promise<{ html: string; blocked: false } | { html: null; blocked: boolean }> {
   try {
     const resp = await fetch(url, {
       headers: isApi ? OP_API_HEADERS : OP_HEADERS,
       signal: AbortSignal.timeout(20000),
       redirect: "follow",
     });
+    const text = await resp.text();
     if (!resp.ok) {
-      console.warn(`[OddsPortal] ${resp.status} for ${url}`);
-      return null;
+      // Cloudflare silent-drop: non-2xx + empty body = bot block, not a real 404
+      const blocked = text.length === 0;
+      console.warn(
+        `[OddsPortal] ${resp.status} (${text.length}b) for ${url}` +
+          (blocked ? " — Cloudflare bot block detected" : "")
+      );
+      return { html: null, blocked };
     }
-    return await resp.text();
+    // Also detect Cloudflare challenge pages returned with 200
+    const isChallenge =
+      text.length < 5000 &&
+      (text.includes("cf-browser-verification") ||
+        text.includes("Just a moment") ||
+        text.includes("Checking your browser") ||
+        text.includes("Enable JavaScript"));
+    if (isChallenge) {
+      console.warn(`[OddsPortal] Cloudflare challenge page at ${url}`);
+      return { html: null, blocked: true };
+    }
+    return { html: text, blocked: false };
   } catch (e) {
     console.warn(`[OddsPortal] fetch error for ${url}:`, e);
-    return null;
+    return { html: null, blocked: false };
   }
 }
 
@@ -288,16 +311,39 @@ export async function fetchMatchList(
   let page = 1;
   const MAX_PAGES = 20;
 
+  let consecutiveBlocks = 0;
+
   while (url && page <= MAX_PAGES) {
     onProgress?.(`Fetching page ${page}…`);
-    const html = await opFetch(url);
-    if (!html) {
-      onProgress?.(`⚠ Could not fetch page ${page} — stopping pagination`);
+    const result = await opFetch(url);
+    if (!result.html) {
+      if (result.blocked) {
+        consecutiveBlocks++;
+        onProgress?.(
+          `⚠ OddsPortal is blocking server-side requests (Cloudflare bot protection). ` +
+          `Page ${page} returned an empty response. ` +
+          `OddsPortal requires a real browser session to access their data.`
+        );
+        if (consecutiveBlocks >= 2) {
+          onProgress?.(
+            `❌ OddsPortal block confirmed. ` +
+            `Their site uses Cloudflare TLS-fingerprint detection — plain HTTP requests from a server ` +
+            `are silently dropped. To scrape OddsPortal you need a headless browser (Playwright/Puppeteer) ` +
+            `or a proxy that presents a real browser TLS fingerprint.`
+          );
+          break;
+        }
+      } else {
+        onProgress?.(`⚠ Could not fetch page ${page} — stopping pagination`);
+        break;
+      }
       break;
     }
 
+    consecutiveBlocks = 0;
+
     // Try __NEXT_DATA__ JSON first
-    const nextData = extractNextData(html);
+    const nextData = extractNextData(result.html);
     let pageMatches: OPMatch[] = [];
     if (nextData) {
       pageMatches = parseNextDataMatches(nextData, url);
@@ -306,7 +352,7 @@ export async function fetchMatchList(
 
     // Fall back to HTML parsing
     if (pageMatches.length === 0) {
-      pageMatches = parseHtmlMatches(html, url);
+      pageMatches = parseHtmlMatches(result.html, url);
       onProgress?.(`  HTML: found ${pageMatches.length} matches on page ${page}`);
     }
 
@@ -323,7 +369,7 @@ export async function fetchMatchList(
     onProgress?.(`  Added ${newCount} new matches (total: ${allMatches.length})`);
 
     // Check for next page
-    const nextUrl = findNextPageUrl(html, url);
+    const nextUrl = findNextPageUrl(result.html, url);
     url = nextUrl;
     page++;
 
@@ -349,21 +395,23 @@ export async function fetchMatchOdds(
     ? match.matchUrl : `${OP_BASE}${match.matchUrl}`;
 
   onProgress?.(`  Fetching odds page: ${matchPageUrl}`);
-  const html = await opFetch(matchPageUrl);
-  if (!html) {
-    onProgress?.(`  ⚠ Could not fetch match page`);
+  const result = await opFetch(matchPageUrl);
+  if (!result.html) {
+    onProgress?.(result.blocked
+      ? `  ⚠ Cloudflare block on match page — odds unavailable`
+      : `  ⚠ Could not fetch match page`);
     return odds;
   }
 
   // Try to extract from __NEXT_DATA__
-  const nextData = extractNextData(html);
+  const nextData = extractNextData(result.html);
   if (nextData) {
     extractOddsFromNextData(nextData, odds);
   }
 
   // Fall back to HTML parsing for 1X2
   if (!odds["1x2"] || odds["1x2"].length === 0) {
-    extract1x2FromHtml(html, odds);
+    extract1x2FromHtml(result.html, odds);
   }
 
   // Try their internal API for each market using the match hash
@@ -479,58 +527,71 @@ async function fetchMarketOddsFromApi(
 ) {
   if (!matchHash || matchHash.length < 4) return;
 
-  // OddsPortal internal API patterns (they change, we try multiple)
-  const apiPatterns = [
-    { market: "1x2",  url: `${OP_BASE}/api/v1/event/${matchHash}/1x2/` },
-    { market: "ou",   url: `${OP_BASE}/api/v1/event/${matchHash}/over-under/` },
-    { market: "ah",   url: `${OP_BASE}/api/v1/event/${matchHash}/asian-handicap/` },
-    { market: "btts", url: `${OP_BASE}/api/v1/event/${matchHash}/both-teams-score/` },
-    { market: "dc",   url: `${OP_BASE}/api/v1/event/${matchHash}/double-chance/` },
-    { market: "eh",   url: `${OP_BASE}/api/v1/event/${matchHash}/european-handicap/` },
-    { market: "dnb",  url: `${OP_BASE}/api/v1/event/${matchHash}/draw-no-bet/` },
-    { market: "cs",   url: `${OP_BASE}/api/v1/event/${matchHash}/correct-score/` },
-    { market: "htft", url: `${OP_BASE}/api/v1/event/${matchHash}/half-time-full-time/` },
-    { market: "oe",   url: `${OP_BASE}/api/v1/event/${matchHash}/odd-even/` },
+  // OddsPortal internal API — they use betTypeId + scopeId integers.
+  // betTypeId: 1=1x2, 2=O/U, 5=AH, 8=BTTS, 9=DC, 10=DNB, 11=EH, 12=CS, 13=HTFT, 16=OE
+  // scopeId:   2=FT, 4=1H, 6=2H (we default to FT=2)
+  // Current pattern: /api/v1/event-row/{hash}/{betTypeId}/{scopeId}/
+  // Legacy pattern:  /api/v1/event/{hash}/{market-slug}/
+  const apiPatterns: Array<{ market: keyof OPMatchOdds; urls: string[] }> = [
+    { market: "1x2",  urls: [`${OP_BASE}/api/v1/event-row/${matchHash}/1/2/`, `${OP_BASE}/api/v1/event/${matchHash}/1x2/`] },
+    { market: "ou",   urls: [`${OP_BASE}/api/v1/event-row/${matchHash}/2/2/`, `${OP_BASE}/api/v1/event/${matchHash}/over-under/`] },
+    { market: "ah",   urls: [`${OP_BASE}/api/v1/event-row/${matchHash}/5/2/`, `${OP_BASE}/api/v1/event/${matchHash}/asian-handicap/`] },
+    { market: "btts", urls: [`${OP_BASE}/api/v1/event-row/${matchHash}/8/2/`, `${OP_BASE}/api/v1/event/${matchHash}/both-teams-score/`] },
+    { market: "dc",   urls: [`${OP_BASE}/api/v1/event-row/${matchHash}/9/2/`, `${OP_BASE}/api/v1/event/${matchHash}/double-chance/`] },
+    { market: "dnb",  urls: [`${OP_BASE}/api/v1/event-row/${matchHash}/10/2/`, `${OP_BASE}/api/v1/event/${matchHash}/draw-no-bet/`] },
+    { market: "eh",   urls: [`${OP_BASE}/api/v1/event-row/${matchHash}/11/2/`, `${OP_BASE}/api/v1/event/${matchHash}/european-handicap/`] },
+    { market: "cs",   urls: [`${OP_BASE}/api/v1/event-row/${matchHash}/12/2/`, `${OP_BASE}/api/v1/event/${matchHash}/correct-score/`] },
+    { market: "htft", urls: [`${OP_BASE}/api/v1/event-row/${matchHash}/13/2/`, `${OP_BASE}/api/v1/event/${matchHash}/half-time-full-time/`] },
+    { market: "oe",   urls: [`${OP_BASE}/api/v1/event-row/${matchHash}/16/2/`, `${OP_BASE}/api/v1/event/${matchHash}/odd-even/`] },
   ];
 
   const headers = { ...OP_API_HEADERS, "Referer": referer };
 
-  for (const { market, url } of apiPatterns) {
+  for (const { market, urls } of apiPatterns) {
     // Skip if we already have good data for this market
     const existing = (odds as Record<string, BookmakerEntry[]>)[market];
     if (existing && existing.length > 2) continue;
 
-    try {
-      const resp = await fetch(url, {
-        headers,
-        signal: AbortSignal.timeout(8000),
-      });
-      if (!resp.ok) continue;
-
-      const contentType = resp.headers.get("content-type") ?? "";
-      if (!contentType.includes("json")) continue;
-
-      const json = await resp.json() as Record<string, unknown>;
-      const data = json["d"] ?? json["data"] ?? json["odds"] ?? json;
-
-      if (Array.isArray(data)) {
-        const parsed = parseBookmakerArray(data, market);
-        if (parsed.length > 0) {
-          // For CS: keep only top 5 scores per team perspective
-          (odds as Record<string, BookmakerEntry[]>)[market] =
-            market === "cs" ? filterTopCsOdds(parsed) : parsed;
+    for (const url of urls) {
+      try {
+        const resp = await fetch(url, {
+          headers,
+          signal: AbortSignal.timeout(8000),
+        });
+        // 404 with no body = Cloudflare block, not a real 404 — skip all remaining
+        if (!resp.ok) {
+          const body = await resp.text();
+          if (body.length === 0) return; // Cloudflare silently dropping all API calls
+          continue;
         }
-      } else if (typeof data === "object" && data !== null) {
-        const arr = Object.values(data).flat();
-        const parsed = parseBookmakerArray(arr as unknown[], market);
-        if (parsed.length > 0) {
-          (odds as Record<string, BookmakerEntry[]>)[market] =
-            market === "cs" ? filterTopCsOdds(parsed) : parsed;
-        }
-      }
-    } catch { /* ignore per-market errors */ }
 
-    await new Promise(r => setTimeout(r, 300));
+        const contentType = resp.headers.get("content-type") ?? "";
+        if (!contentType.includes("json")) continue;
+
+        const json = await resp.json() as Record<string, unknown>;
+        // OddsPortal wraps in {d: ...} or {data: ...} depending on version
+        const data = json["d"] ?? json["data"] ?? json["odds"] ?? json["rows"] ?? json;
+
+        if (Array.isArray(data)) {
+          const parsed = parseBookmakerArray(data, market);
+          if (parsed.length > 0) {
+            (odds as Record<string, BookmakerEntry[]>)[market] =
+              market === "cs" ? filterTopCsOdds(parsed) : parsed;
+            break; // got data from this URL, skip fallbacks
+          }
+        } else if (typeof data === "object" && data !== null) {
+          const arr = Object.values(data).flat();
+          const parsed = parseBookmakerArray(arr as unknown[], market);
+          if (parsed.length > 0) {
+            (odds as Record<string, BookmakerEntry[]>)[market] =
+              market === "cs" ? filterTopCsOdds(parsed) : parsed;
+            break;
+          }
+        }
+      } catch { /* ignore per-market errors */ }
+
+      await new Promise(r => setTimeout(r, 200));
+    }
   }
 }
 

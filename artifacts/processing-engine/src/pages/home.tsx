@@ -247,8 +247,17 @@ function BulkUploadModal({ leagueName, countryName, suggestedPath, onClose }: Up
         body: JSON.stringify({ leagueName, countryName, oddsPortalPath: path.trim(), year }),
       });
       if (!r.ok) {
-        const j = await r.json() as { error?: string };
-        throw new Error(j.error ?? `HTTP ${r.status}`);
+        let errMsg = `HTTP ${r.status}`;
+        try {
+          const ct = r.headers.get("content-type") ?? "";
+          if (ct.includes("json")) {
+            const j = await r.json() as { error?: string };
+            errMsg = j.error ?? errMsg;
+          } else {
+            errMsg = `API server error (${r.status}) — check that the server is running`;
+          }
+        } catch {}
+        throw new Error(errMsg);
       }
       const d = await r.json() as { jobId: string };
       setJobId(d.jobId);
