@@ -16,12 +16,20 @@ description: Architecture and constraints for the league bulk-upload feature
 ## OddsPortal URL pattern
 - Current year: `https://www.oddsportal.com/football/{country}/{league}/results/`
 - Previous year: `https://www.oddsportal.com/football/{country}/{league}-{year}/results/`
-- Individual match odds API (experimental): `https://www.oddsportal.com/api/v1/event/{hash}/{market}/`
+- Odds API (current): `/api/v1/event-row/{hash}/{betTypeId}/{scopeId}/`
+- betTypeIds: 1=1x2, 2=O/U, 5=AH, 8=BTTS, 9=DC, 10=DNB, 11=EH, 12=CS, 13=HTFT, 16=OE; scopeId 2=FT
+
+## Playwright browser scraping
+- `artifacts/api-server/src/lib/browserScraper.ts` — singleton Chromium via `REPLIT_PLAYWRIGHT_CHROMIUM_EXECUTABLE`
+- All plain HTTP fetch is blocked by Cloudflare TLS fingerprinting; browser is primary scrape method
+- Strategy: try plain fetch first (fast), auto-fall back to browser (10-20 s/page) on block
+- Browser intercepts ALL JSON responses from oddsportal.com; intercepted odds parsed by URL pattern
+- Browser kept alive as singleton; per-request context closed after each page
+- Hash pagination: `baseUrl#/page/N/` triggers client-side Next.js navigation for more results
 
 ## Constraints
 - Skip matches where either team has <20 StatsHub historical matches
 - CS (Correct Score): top 10 scores only (by lowest average odds = most likely)
-- OddsPortal may be blocked by Cloudflare — scraper degrades gracefully (stores stats without odds)
 - Job system is in-memory (restarting server loses running job state, but DB records persist)
 
 **Why:** User wanted OddsPortal bookmaker odds + StatsHub player stats stored in SQLite per league per year.

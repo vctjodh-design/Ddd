@@ -1,9 +1,19 @@
 /**
  * OddsPortal scraper — fetches match lists and bookmaker odds.
- * Uses direct HTTP fetch + cheerio HTML parsing + __NEXT_DATA__ JSON extraction.
- * Resilient: gracefully handles Cloudflare blocks and missing markets.
+ *
+ * Strategy (tried in order):
+ *  1. Plain HTTP fetch  — fast but blocked by Cloudflare TLS-fingerprint detection
+ *  2. Playwright browser — launches real Chromium, bypasses Cloudflare; slower (~10-15 s/page)
+ *
+ * Endpoint map (OddsPortal current as of 2025):
+ *   Results page:  /football/{country}/{slug}[-{year}]/results/  (HTML + __NEXT_DATA__)
+ *   Odds API v2:   /api/v1/event-row/{hash}/{betTypeId}/{scopeId}/
+ *   Odds API v1:   /api/v1/event/{hash}/{market-slug}/   (legacy, may be dead)
+ *   betTypeId:     1=1x2  2=O/U  5=AH  8=BTTS  9=DC  10=DNB  11=EH  12=CS  13=HTFT  16=OE
+ *   scopeId:       2=FT   4=1H   6=2H
  */
 import * as cheerio from "cheerio";
+import { browserFetch, browserFetchHashPage, type InterceptedResponse } from "./browserScraper.js";
 
 const OP_BASE = "https://www.oddsportal.com";
 
@@ -295,6 +305,128 @@ function findNextPageUrl(html: string, currentUrl: string): string | null {
   return `${base}#/page/${nextPage}/`;
 }
 
+// ── Parse matches from Playwright-intercepted API responses ──────────────────
+
+function parseInterceptedMatches(intercepted: InterceptedResponse[], pageUrl: string): OPMatch[] {
+  const matches: OPMatch[] = [];
+  for (const { json } of intercepted) {
+    if (!json || typeof json !== "object") continue;
+    // OddsPortal wraps event arrays in various keys
+    const candidates = [
+      (json as Record<string, unknown>)["rows"],
+      (json as Record<string, unknown>)["events"],
+      (json as Record<string, unknown>)["data"],
+      (json as Record<string, unknown>)["d"],
+    ];
+    for (const c of candidates) {
+      if (!Array.isArray(c)) continue;
+      for (const ev of c) {
+        if (!ev || typeof ev !== "object") continue;
+        const e = ev as Record<string, unknown>;
+        const home = String(e["homeTeamName"] ?? e["home"] ?? e["homeTeam"] ?? "");
+        const away = String(e["awayTeamName"] ?? e["away"] ?? e["awayTeam"] ?? "");
+        if (!home || !away) continue;
+        const ts  = Number(e["startDate"] ?? e["startTime"] ?? e["timestamp"] ?? 0);
+        const hs  = e["homeScore"] !== undefined ? Number(e["homeScore"]) : null;
+        const as_ = e["awayScore"] !== undefined ? Number(e["awayScore"]) : null;
+        const slug = String(e["slug"] ?? e["eventUrl"] ?? e["url"] ?? "");
+        const date = ts ? new Date(ts * 1000).toISOString().slice(0, 10)
+                       : new Date().toISOString().slice(0, 10);
+        const matchUrl   = slug.startsWith("/") ? slug : slug ? `/football/${slug}` : "";
+        const matchHash  = extractHashFromSlug(slug);
+        matches.push({ date, homeTeam: home, awayTeam: away, homeScore: hs, awayScore: as_, matchUrl, matchHash });
+      }
+    }
+  }
+  return matches;
+}
+
+// ── Parse odds from Playwright-intercepted API responses ─────────────────────
+
+function parseInterceptedOdds(
+  intercepted: InterceptedResponse[],
+  odds: Partial<OPMatchOdds>
+): void {
+  // betTypeId → our market key (OddsPortal's numeric IDs)
+  const betTypeMap: Record<number, keyof OPMatchOdds> = {
+    1: "1x2", 2: "ou", 5: "ah", 8: "btts", 9: "dc",
+    10: "dnb", 11: "eh", 12: "cs", 13: "htft", 16: "oe",
+  };
+
+  for (const { url, json } of intercepted) {
+    if (!json || typeof json !== "object") continue;
+
+    // Determine which market this URL belongs to
+    let market: keyof OPMatchOdds | null = null;
+
+    // Pattern: /api/v1/event-row/{hash}/{betTypeId}/{scopeId}/
+    const betTypeMatch = url.match(/\/event-row\/[^/]+\/(\d+)\//);
+    if (betTypeMatch) {
+      market = betTypeMap[Number(betTypeMatch[1])] ?? null;
+    }
+    // Pattern: /api/v1/event/{hash}/1x2/ etc.
+    if (!market) {
+      const slugMatch = url.match(/\/event\/[^/]+\/([^/]+)\//);
+      if (slugMatch) {
+        const slugToMarket: Record<string, keyof OPMatchOdds> = {
+          "1x2": "1x2", "over-under": "ou", "asian-handicap": "ah",
+          "both-teams-score": "btts", "double-chance": "dc",
+          "draw-no-bet": "dnb", "european-handicap": "eh",
+          "correct-score": "cs", "half-time-full-time": "htft", "odd-even": "oe",
+        };
+        market = slugToMarket[slugMatch[1]] ?? null;
+      }
+    }
+
+    if (!market) continue;
+
+    // Extract bookmaker data
+    const raw = (json as Record<string, unknown>);
+    const data = raw["d"] ?? raw["data"] ?? raw["odds"] ?? raw["rows"] ?? json;
+    const arr  = Array.isArray(data) ? data : typeof data === "object" ? Object.values(data as object).flat() : [];
+    const parsed = parseBookmakerArray(arr as unknown[], market);
+    if (parsed.length > 0) {
+      (odds as Record<string, BookmakerEntry[]>)[market] =
+        market === "cs" ? filterTopCsOdds(parsed) : parsed;
+    }
+  }
+}
+
+// ── Shared page-content parser ────────────────────────────────────────────────
+
+function extractMatchesFromContent(
+  html: string,
+  intercepted: InterceptedResponse[],
+  url: string,
+  onProgress?: (msg: string) => void
+): OPMatch[] {
+  let pageMatches: OPMatch[] = [];
+
+  // 1. Intercepted API responses (most reliable)
+  pageMatches = parseInterceptedMatches(intercepted, url);
+  if (pageMatches.length > 0) {
+    onProgress?.(`  API intercept: found ${pageMatches.length} matches`);
+    return pageMatches;
+  }
+
+  // 2. __NEXT_DATA__ embedded JSON
+  const nextData = extractNextData(html);
+  if (nextData) {
+    pageMatches = parseNextDataMatches(nextData, url);
+    if (pageMatches.length > 0) {
+      onProgress?.(`  __NEXT_DATA__: found ${pageMatches.length} matches`);
+      return pageMatches;
+    }
+  }
+
+  // 3. Classic HTML table parsing
+  pageMatches = parseHtmlMatches(html, url);
+  if (pageMatches.length > 0) {
+    onProgress?.(`  HTML parse: found ${pageMatches.length} matches`);
+  }
+  return pageMatches;
+}
+
 // ── Fetch match list with pagination ─────────────────────────────────────────
 
 export async function fetchMatchList(
@@ -307,57 +439,70 @@ export async function fetchMatchList(
 
   const allMatches: OPMatch[] = [];
   const seen = new Set<string>();
-  let url: string | null = startUrl;
-  let page = 1;
   const MAX_PAGES = 20;
 
-  let consecutiveBlocks = 0;
+  // ── Attempt 1: plain HTTP (fast) ──────────────────────────────────────────
+  let plainBlocked = false;
+  {
+    let url: string | null = startUrl;
+    let page = 1;
 
-  while (url && page <= MAX_PAGES) {
-    onProgress?.(`Fetching page ${page}…`);
-    const result = await opFetch(url);
-    if (!result.html) {
-      if (result.blocked) {
-        consecutiveBlocks++;
-        onProgress?.(
-          `⚠ OddsPortal is blocking server-side requests (Cloudflare bot protection). ` +
-          `Page ${page} returned an empty response. ` +
-          `OddsPortal requires a real browser session to access their data.`
-        );
-        if (consecutiveBlocks >= 2) {
-          onProgress?.(
-            `❌ OddsPortal block confirmed. ` +
-            `Their site uses Cloudflare TLS-fingerprint detection — plain HTTP requests from a server ` +
-            `are silently dropped. To scrape OddsPortal you need a headless browser (Playwright/Puppeteer) ` +
-            `or a proxy that presents a real browser TLS fingerprint.`
-          );
-          break;
+    while (url && page <= MAX_PAGES) {
+      onProgress?.(`[plain] Fetching page ${page}…`);
+      const result = await opFetch(url);
+      if (!result.html) {
+        if (result.blocked) {
+          plainBlocked = true;
+          onProgress?.(`⚠ Plain fetch blocked by Cloudflare — switching to browser mode`);
+        } else {
+          onProgress?.(`⚠ Could not fetch page ${page}`);
         }
-      } else {
-        onProgress?.(`⚠ Could not fetch page ${page} — stopping pagination`);
         break;
       }
+
+      const pageMatches = extractMatchesFromContent(result.html, [], url, onProgress);
+      if (pageMatches.length === 0) { onProgress?.(`  No matches on page ${page} — stopping`); break; }
+
+      let newCount = 0;
+      for (const m of pageMatches) {
+        const key = `${m.date}|${m.homeTeam}|${m.awayTeam}`;
+        if (!seen.has(key)) { seen.add(key); allMatches.push(m); newCount++; }
+      }
+      onProgress?.(`  +${newCount} new (total: ${allMatches.length})`);
+
+      const nextUrl = findNextPageUrl(result.html, url);
+      url = nextUrl; page++;
+      if (url) await new Promise(r => setTimeout(r, 1500));
+    }
+  }
+
+  if (allMatches.length > 0) {
+    onProgress?.(`Match list complete (plain fetch): ${allMatches.length} matches`);
+    return allMatches;
+  }
+
+  // ── Attempt 2: Playwright browser (bypasses Cloudflare) ───────────────────
+  onProgress?.(`🌐 Launching browser (Playwright/Chromium) to bypass Cloudflare…`);
+  onProgress?.(`   This takes 10-20 s per page — please wait.`);
+
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    onProgress?.(`[browser] Fetching page ${page}…`);
+    const result = page === 1
+      ? await browserFetch(startUrl)
+      : await browserFetchHashPage(startUrl, page);
+
+    if (result.blocked) {
+      onProgress?.(`❌ Browser was also blocked — OddsPortal may have updated bot protection`);
+      break;
+    }
+    if (!result.html) {
+      onProgress?.(`⚠ Browser fetch returned no content on page ${page}`);
       break;
     }
 
-    consecutiveBlocks = 0;
-
-    // Try __NEXT_DATA__ JSON first
-    const nextData = extractNextData(result.html);
-    let pageMatches: OPMatch[] = [];
-    if (nextData) {
-      pageMatches = parseNextDataMatches(nextData, url);
-      onProgress?.(`  JSON: found ${pageMatches.length} matches on page ${page}`);
-    }
-
-    // Fall back to HTML parsing
+    const pageMatches = extractMatchesFromContent(result.html, result.intercepted, startUrl, onProgress);
     if (pageMatches.length === 0) {
-      pageMatches = parseHtmlMatches(result.html, url);
-      onProgress?.(`  HTML: found ${pageMatches.length} matches on page ${page}`);
-    }
-
-    if (pageMatches.length === 0) {
-      onProgress?.(`  No matches found on page ${page} — stopping`);
+      onProgress?.(`  No matches on page ${page} — pagination complete`);
       break;
     }
 
@@ -366,18 +511,17 @@ export async function fetchMatchList(
       const key = `${m.date}|${m.homeTeam}|${m.awayTeam}`;
       if (!seen.has(key)) { seen.add(key); allMatches.push(m); newCount++; }
     }
-    onProgress?.(`  Added ${newCount} new matches (total: ${allMatches.length})`);
+    onProgress?.(`  +${newCount} new (total: ${allMatches.length})`);
 
-    // Check for next page
-    const nextUrl = findNextPageUrl(result.html, url);
-    url = nextUrl;
-    page++;
+    // Check for more pages using the HTML next-page logic
+    const nextUrl = findNextPageUrl(result.html, startUrl);
+    if (!nextUrl) break;
 
-    // Polite delay between pages
-    if (url) await new Promise(r => setTimeout(r, 1500));
+    // Brief pause between browser pages
+    await new Promise(r => setTimeout(r, 1000));
   }
 
-  onProgress?.(`Match list complete: ${allMatches.length} matches`);
+  onProgress?.(`Match list complete (browser): ${allMatches.length} matches`);
   return allMatches;
 }
 
@@ -394,31 +538,59 @@ export async function fetchMatchOdds(
   const matchPageUrl = match.matchUrl.startsWith("http")
     ? match.matchUrl : `${OP_BASE}${match.matchUrl}`;
 
-  onProgress?.(`  Fetching odds page: ${matchPageUrl}`);
-  const result = await opFetch(matchPageUrl);
-  if (!result.html) {
-    onProgress?.(result.blocked
-      ? `  ⚠ Cloudflare block on match page — odds unavailable`
-      : `  ⚠ Could not fetch match page`);
-    return odds;
+  onProgress?.(`  Fetching odds: ${matchPageUrl}`);
+
+  // ── Attempt 1: plain HTTP (fast) ──────────────────────────────────────────
+  let usedBrowser = false;
+  const plainResult = await opFetch(matchPageUrl);
+
+  if (plainResult.html && !plainResult.blocked) {
+    const nextData = extractNextData(plainResult.html);
+    if (nextData) extractOddsFromNextData(nextData, odds);
+    if (!odds["1x2"] || odds["1x2"].length === 0) extract1x2FromHtml(plainResult.html, odds);
+    if (match.matchHash) await fetchMarketOddsFromApi(match.matchHash, matchPageUrl, odds, onProgress);
   }
 
-  // Try to extract from __NEXT_DATA__
-  const nextData = extractNextData(result.html);
-  if (nextData) {
-    extractOddsFromNextData(nextData, odds);
+  // ── Attempt 2: Playwright browser (bypasses Cloudflare) ───────────────────
+  if (Object.keys(odds).length === 0) {
+    onProgress?.(`  🌐 Plain fetch blocked — using browser for odds…`);
+    usedBrowser = true;
+
+    const browserResult = await browserFetch(matchPageUrl);
+    if (browserResult.blocked) {
+      onProgress?.(`  ❌ Browser also blocked — no odds available`);
+      return odds;
+    }
+    if (!browserResult.html) {
+      onProgress?.(`  ⚠ Browser returned no content`);
+      return odds;
+    }
+
+    // Parse intercepted API responses (most reliable — captures all market XHR calls)
+    if (browserResult.intercepted.length > 0) {
+      parseInterceptedOdds(browserResult.intercepted, odds);
+      onProgress?.(`  ✓ Captured ${browserResult.intercepted.length} API responses via browser`);
+    }
+
+    // Fallback: extract from __NEXT_DATA__
+    if (Object.keys(odds).length === 0) {
+      const nextData = extractNextData(browserResult.html);
+      if (nextData) extractOddsFromNextData(nextData, odds);
+    }
+
+    // Fallback: plain HTML 1x2
+    if (!odds["1x2"] || odds["1x2"].length === 0) {
+      extract1x2FromHtml(browserResult.html, odds);
+    }
+
+    // Try API with hash (now with valid Cloudflare cookies from browser — but still server-side)
+    if (match.matchHash && Object.keys(odds).length === 0) {
+      await fetchMarketOddsFromApi(match.matchHash, matchPageUrl, odds, onProgress);
+    }
   }
 
-  // Fall back to HTML parsing for 1X2
-  if (!odds["1x2"] || odds["1x2"].length === 0) {
-    extract1x2FromHtml(result.html, odds);
-  }
-
-  // Try their internal API for each market using the match hash
-  if (match.matchHash) {
-    await fetchMarketOddsFromApi(match.matchHash, matchPageUrl, odds, onProgress);
-  }
-
+  const marketCount = Object.keys(odds).length;
+  onProgress?.(`  ${marketCount > 0 ? `✓ ${marketCount} markets` : "⚠ no odds"} (${usedBrowser ? "browser" : "plain fetch"})`);
   return odds;
 }
 
