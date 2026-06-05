@@ -13,7 +13,7 @@
  *   scopeId:       2=FT   4=1H   6=2H
  */
 import * as cheerio from "cheerio";
-import { browserFetch, browserFetchHashPage, fetchOddsPage, type InterceptedResponse, type DomLink, type OddsRow } from "./browserScraper.js";
+import { browserFetch, browserFetchHashPage, fetchOddsPage, type InterceptedResponse, type DomLink, type OddsRow, type OddsPageResult } from "./browserScraper.js";
 
 const OP_BASE = "https://www.oddsportal.com";
 
@@ -121,7 +121,10 @@ export interface OPMatch {
 
 export interface BookmakerEntry {
   bookmaker: string;
+  /** Closing odds (final odds at match start) */
   odds: Record<string, number>;
+  /** Opening odds (from mouseenter popup) — may be absent if page didn't expose popup */
+  openingOdds?: Record<string, number>;
 }
 
 export interface OPMatchOdds {
@@ -750,9 +753,15 @@ export async function fetchMatchList(
 /**
  * Fetch bookmaker odds for one match.
  *
- * @param match          Match data (must include matchHash for URL construction)
- * @param oddsPortalPath League path, e.g. "algeria/ligue-1" — used to build the proper match URL
- * @param onProgress     Optional log callback
+ * Strategy:
+ *  1. Construct canonical match page URL from hash + league path + team slugs
+ *  2. Try plain HTTP (fast) — usually blocked by Cloudflare
+ *  3. Use Playwright with persistent context:
+ *     a. Remove classification headers (flex items-center justify-start)
+ *     b. Expand all market sections (flex w-full items-center)
+ *     c. Simulate mouseenter on bookmaker cells → capture opening odds popups
+ *     d. Get full body.innerText
+ *  4. Apply RegEx extraction on the innerText (based on OddsPortal 2025 DOM)
  */
 export async function fetchMatchOdds(
   match:          OPMatch,
@@ -763,22 +772,17 @@ export async function fetchMatchOdds(
 
   // ── Resolve the correct match page URL ────────────────────────────────────
   // DOM extraction from results pages gives H2H URLs (/football/h2h/.../#hash).
-  // H2H pages don't load the bookmaker odds API — we must navigate to the
-  // canonical match page: /football/{country}/{league}/{home}-{away}-{hash}/
+  // H2H pages don't load bookmaker odds — navigate to the canonical page instead.
   let matchPageUrl = "";
 
   if (match.matchHash && oddsPortalPath) {
-    // Preferred: construct canonical match URL from hash + league path + team slugs
     matchPageUrl = buildMatchPageUrl(match.homeTeam, match.awayTeam, match.matchHash, oddsPortalPath);
   }
-
   if (!matchPageUrl && match.matchUrl) {
-    // Fallback: use stored URL (may be H2H, still worth trying)
     matchPageUrl = match.matchUrl.startsWith("http")
       ? match.matchUrl
       : `${OP_BASE}${match.matchUrl}`;
   }
-
   if (!matchPageUrl) {
     onProgress?.(`  ⚠ No usable URL for match`);
     return odds;
@@ -788,25 +792,21 @@ export async function fetchMatchOdds(
 
   // ── Attempt 1: plain HTTP (fast, no JS) ───────────────────────────────────
   const plainResult = await opFetch(matchPageUrl);
-
   if (plainResult.html && !plainResult.blocked) {
     const nextData = extractNextData(plainResult.html);
     if (nextData) extractOddsFromNextData(nextData, odds);
     if (!odds["1x2"] || odds["1x2"].length === 0) extract1x2FromHtml(plainResult.html, odds);
     if (match.matchHash) await fetchMarketOddsFromApi(match.matchHash, matchPageUrl, odds, onProgress);
   }
-
   if (Object.keys(odds).length > 0) {
     onProgress?.(`  ✓ ${Object.keys(odds).length} markets (plain fetch)`);
     return odds;
   }
 
-  // ── Attempt 2: Playwright browser with persistent context (fast) ──────────
-  // Uses a shared browser context so Cloudflare cookies carry over from the
-  // match list fetch — no re-challenge needed after the first match.
-  onProgress?.(`  🌐 Using browser (persistent context) for odds…`);
+  // ── Attempt 2: Playwright browser — header removal + section expansion + hover ──
+  onProgress?.(`  🌐 Using browser for odds…`);
 
-  const browserResult = await fetchOddsPage(matchPageUrl);
+  const browserResult: OddsPageResult = await fetchOddsPage(matchPageUrl);
 
   if (browserResult.blocked) {
     onProgress?.(`  ❌ Browser blocked — no odds available`);
@@ -817,74 +817,367 @@ export async function fetchMatchOdds(
     return odds;
   }
 
-  // Parse intercepted API responses (works when OddsPortal returns plaintext JSON)
+  // Primary: RegEx on full body.innerText (OddsPortal 2025 Vue SPA)
+  // This is the most reliable method — the reference gist proves the DOM text structure.
+  if (browserResult.pageText && browserResult.pageText.length > 100) {
+    parseOddsFromPageText(browserResult.pageText, browserResult.popupTexts ?? {}, odds);
+    if (Object.keys(odds).length > 0) {
+      const markets = Object.keys(odds).length;
+      const bms = (odds["1x2"] ?? odds["ou"] ?? odds["ah"] ?? []  as BookmakerEntry[]).length;
+      onProgress?.(`  ✓ ${markets} markets, ${bms} bookmakers (text/regex)`);
+      return odds;
+    }
+  }
+
+  // Fallback A: intercepted JSON API responses
   if (browserResult.intercepted.length > 0) {
     parseInterceptedOdds(browserResult.intercepted, odds);
   }
 
-  // Parse DOM-rendered odds (primary method for OddsPortal 2025 encrypted SPA)
+  // Fallback B: DOM row walk
   if (browserResult.oddsRows && browserResult.oddsRows.length > 0) {
-    parseDomOddsRows(browserResult.oddsRows, odds);
+    parseDomOddsRowsFallback(browserResult.oddsRows, odds);
   }
 
-  // Fallback: __NEXT_DATA__
-  if (Object.keys(odds).length === 0 && browserResult.html) {
+  // Fallback C: __NEXT_DATA__
+  if (Object.keys(odds).length === 0) {
     const nextData = extractNextData(browserResult.html);
     if (nextData) extractOddsFromNextData(nextData, odds);
   }
 
-  // Fallback: HTML table parsing
-  if ((!odds["1x2"] || odds["1x2"].length === 0) && browserResult.html) {
+  // Fallback D: HTML table parsing
+  if (!odds["1x2"] || odds["1x2"].length === 0) {
     extract1x2FromHtml(browserResult.html, odds);
   }
 
   const marketCount = Object.keys(odds).length;
-  onProgress?.(`  ${marketCount > 0 ? `✓ ${marketCount} markets` : "⚠ no odds"} (browser)`);
+  onProgress?.(`  ${marketCount > 0 ? `✓ ${marketCount} markets` : "⚠ no odds"} (browser/fallback)`);
   return odds;
 }
 
-// ── Parse DOM-extracted odds rows ─────────────────────────────────────────────
+// ── RegEx odds extraction from body.innerText ─────────────────────────────────
+//
+// OddsPortal 2025 Vue SPA renders a text structure like:
+//
+//   Bet365
+//   2.10
+//   3.20
+//   3.40
+//   85%
+//   Pinnacle
+//   1.78
+//   3.61
+//   4.54
+//   94%
+//   ...
+//   Over/Under +2.5
+//   Bet365
+//   +2.5
+//   1.91
+//   1.95
+//   91%
+//
+// Reference technique (from OddsPortal scraping gist):
+//   Closing 1X2: bookmaker[^\d-]*(.*)      ← home
+//                bookmaker[^\d-]*.*\s*(.*) ← draw
+//                bookmaker[^\d-]*.*\s*.*\s*(.*) ← away
+//   O/U:         same pattern — capture 1 = line value (+2.5), 2 = over, 3 = under
+//   Section expand: click "flex w-full items-center" elements before reading text
+//   Opening odds popup: "Opening odds:\r\n.*\r\n(.*)"
+
+/** Keyword patterns that identify market section headers in innerText */
+const SECTION_PATTERNS: Array<{ key: keyof OPMatchOdds; patterns: RegExp[] }> = [
+  { key: "1x2",  patterns: [/^1X2$/m, /^Home\/Draw\/Away$/im] },
+  { key: "ou",   patterns: [/^Over\/Under \+[\d.]+$/m] },
+  { key: "ah",   patterns: [/^Asian Handicap [+-]?[\d.]+$/im] },
+  { key: "btts", patterns: [/^Both Teams to Score$/im] },
+  { key: "dc",   patterns: [/^Double Chance$/im] },
+  { key: "dnb",  patterns: [/^Draw No Bet$/im] },
+  { key: "eh",   patterns: [/^European Handicap/im] },
+  { key: "cs",   patterns: [/^Correct Score$/im] },
+  { key: "htft", patterns: [/^Half Time\/Full Time$/im] },
+  { key: "oe",   patterns: [/^Odd\/Even$/im, /^Odd or Even$/im] },
+];
 
 /**
- * Interpret raw DOM odds rows (extracted via page.evaluate in fetchOddsPage).
+ * Parse full body.innerText from an OddsPortal match page into structured odds.
+ * Uses the RegEx patterns from the reference gist — works for all bookmakers.
  *
- * OddsPortal match pages render odds in a table where each bookmaker row has:
- *   - 3 values → 1X2 (home / draw / away)
- *   - 2 values → BTTS (yes / no) or DNB or DC
- *
- * We process all rows together; 3-value rows populate 1x2, 2-value rows populate
- * btts/dc (heuristic: lowest average = most likely market type).
+ * @param text       Full document.body.innerText after section expansion
+ * @param popupTexts Per-cell popup texts keyed as "{bookmaker}|{hda}" (1=home,2=draw,3=away)
+ * @param odds       Output object — populated in-place
  */
-function parseDomOddsRows(rows: OddsRow[], odds: Partial<OPMatchOdds>): void {
-  const entries1x2: BookmakerEntry[] = [];
-  const entries2val: BookmakerEntry[] = [];
+function parseOddsFromPageText(
+  text:        string,
+  popupTexts:  Record<string, string>,
+  odds:        Partial<OPMatchOdds>
+): void {
+  if (!text) return;
 
-  for (const row of rows) {
-    const { bookmaker, values } = row;
-    if (!bookmaker || values.length < 2) continue;
+  // Normalise line endings
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
-    // Sanity: all values must be in a plausible odds range
-    if (!values.every(v => v >= 1.01 && v <= 500)) continue;
+  // ── Split into market sections ─────────────────────────────────────────────
+  // Find the character offset of each market section header in the text.
+  // We use these to slice the text and parse each section independently.
+  const sectionOffsets: Array<{ key: keyof OPMatchOdds; start: number; label: string }> = [];
 
-    if (values.length === 3) {
-      entries1x2.push({
-        bookmaker,
-        odds: { "1": values[0], "X": values[1], "2": values[2] },
-      });
-    } else if (values.length === 2) {
-      entries2val.push({
-        bookmaker,
-        odds: { "yes": values[0], "no": values[1] },
-      });
+  for (const { key, patterns } of SECTION_PATTERNS) {
+    for (const pat of patterns) {
+      const m = normalized.match(pat);
+      if (m && m.index !== undefined) {
+        sectionOffsets.push({ key, start: m.index, label: m[0] });
+        break;
+      }
     }
   }
 
-  if (entries1x2.length > 0 && (!odds["1x2"] || odds["1x2"].length === 0)) {
+  // Sort by appearance order in the text
+  sectionOffsets.sort((a, b) => a.start - b.start);
+
+  if (sectionOffsets.length === 0) {
+    // No clear section headers — try to parse the whole page as 1x2
+    const entries = parseBookmakerSection(normalized, "1x2");
+    if (entries.length > 0) odds["1x2"] = entries;
+    return;
+  }
+
+  // Parse each section between its start and the next section's start
+  for (let i = 0; i < sectionOffsets.length; i++) {
+    const { key, start } = sectionOffsets[i];
+    const end = sectionOffsets[i + 1]?.start ?? normalized.length;
+    const sectionText = normalized.slice(start, end);
+    const entries = parseBookmakerSection(sectionText, key);
+    if (entries.length > 0) {
+      (odds as Record<string, BookmakerEntry[]>)[key] = entries;
+    }
+  }
+
+  // ── Merge opening odds from popup texts ───────────────────────────────────
+  // popupTexts is keyed "{bookmakerName}|{hda}" where hda=1 (home), 2 (draw), 3 (away).
+  // The popup innerText has the format: "…Opening odds:\n{date/line}\n{value}…"
+  if (Object.keys(popupTexts).length > 0 && odds["1x2"] && odds["1x2"].length > 0) {
+    const hdaKeys = ["1", "X", "2"] as const;
+    for (const entry of odds["1x2"]) {
+      const openingOdds: Record<string, number> = {};
+      for (const hda of [1, 2, 3] as const) {
+        const popupKey = `${entry.bookmaker}|${hda}`;
+        const popup = popupTexts[popupKey] ?? "";
+        const openMatch = popup.match(/Opening odds:\n.*\n([\d.]+)/i);
+        if (openMatch) {
+          const val = parseFloat(openMatch[1]);
+          if (val >= 1.01 && val <= 100) {
+            openingOdds[hdaKeys[hda - 1]] = val;
+          }
+        }
+      }
+      if (Object.keys(openingOdds).length > 0) {
+        entry.openingOdds = openingOdds;
+      }
+    }
+  }
+}
+
+/**
+ * Parse bookmaker rows from a market section's text.
+ *
+ * For each market type, a bookmaker row in the innerText looks like:
+ *   Bet365          ← bookmaker name line (starts with capital, no digits)
+ *   2.10            ← value 1 (for 1x2: home; for O/U: line value like +2.5)
+ *   3.20            ← value 2 (draw / over)
+ *   3.40            ← value 3 (away / under)  — absent for 2-outcome markets
+ *   85%             ← bookmaker margin (ignored)
+ *
+ * Uses the reference gist regex pattern: bookmaker[^\d-]*(val1)\n(val2)\n(val3)
+ * Applied generically across all bookmakers found in the section.
+ */
+function parseBookmakerSection(sectionText: string, market: keyof OPMatchOdds): BookmakerEntry[] {
+  const entries: BookmakerEntry[] = [];
+  const lines = sectionText.split("\n");
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+
+    // A bookmaker name line: starts with a capital letter, no leading digits,
+    // length 2–50, does not look like a score or percentage.
+    if (
+      line.length >= 2 &&
+      line.length <= 50 &&
+      /^[A-Z]/.test(line) &&
+      !/^\d/.test(line) &&
+      !/^[\d.]+$/.test(line) &&
+      !line.endsWith("%") &&
+      !line.includes(":") &&
+      !line.match(/^\d+[–\-]\d+$/)
+    ) {
+      // Collect the next up to 5 lines that look like numeric values
+      const vals: string[] = [];
+      let j = i + 1;
+      while (j < lines.length && vals.length < 5) {
+        const vl = lines[j].trim();
+        // A value line: decimal number, optionally prefixed with + or -
+        if (/^[+-]?\d+\.?\d*$/.test(vl)) {
+          vals.push(vl);
+          j++;
+        } else if (vl === "" || vl.endsWith("%") || vl.length > 10) {
+          break;
+        } else {
+          j++;
+        }
+      }
+
+      if (vals.length >= 2) {
+        const entry = buildBookmakerEntry(line, vals, market);
+        if (entry) {
+          entries.push(entry);
+          i = j; // skip past consumed value lines
+          continue;
+        }
+      }
+    }
+    i++;
+  }
+
+  return entries;
+}
+
+/**
+ * Build a BookmakerEntry from a bookmaker name + list of value strings.
+ *
+ * Market layouts:
+ *  1x2:  val[0]=home, val[1]=draw, val[2]=away
+ *  ou:   val[0]=line (+2.5 etc.), val[1]=over, val[2]=under
+ *  ah:   val[0]=handicap, val[1]=homeOdd, val[2]=awayOdd
+ *  btts: val[0]=yes, val[1]=no
+ *  dc:   val[0]=1X, val[1]=12, val[2]=X2
+ *  dnb:  val[0]=home, val[1]=away
+ *  eh:   val[0]=handicap, val[1]=home, val[2]=draw, val[3]=away
+ *  htft: multiple values (first win/draw/loss combos)
+ *  oe:   val[0]=odd, val[1]=even
+ */
+function buildBookmakerEntry(
+  name:   string,
+  vals:   string[],
+  market: keyof OPMatchOdds
+): BookmakerEntry | null {
+  const num = (s: string) => parseFloat(s);
+  const valid = (v: number) => !isNaN(v) && v >= 1.01 && v <= 1000;
+
+  switch (market) {
+    case "1x2": {
+      if (vals.length < 3) return null;
+      const [h, d, a] = [num(vals[0]), num(vals[1]), num(vals[2])];
+      if (!valid(h) || !valid(d) || !valid(a)) return null;
+      return { bookmaker: name, odds: { "1": h, "X": d, "2": a } };
+    }
+    case "ou": {
+      // vals[0] = line (+2.5), vals[1] = over, vals[2] = under
+      // OR vals[0] = over, vals[1] = under (no line prefix)
+      if (vals.length < 2) return null;
+      const hasLine = vals[0].startsWith("+") || vals[0].startsWith("-");
+      const line  = hasLine ? num(vals[0]) : NaN;
+      const over  = hasLine ? num(vals[1]) : num(vals[0]);
+      const under = hasLine ? num(vals[2] ?? "") : num(vals[1]);
+      if (!valid(over) || !valid(under)) return null;
+      const o: Record<string, number> = { over, under };
+      if (!isNaN(line)) o["line"] = line;
+      return { bookmaker: name, odds: o };
+    }
+    case "ah": {
+      if (vals.length < 2) return null;
+      const hasHcap = vals[0].startsWith("+") || vals[0].startsWith("-");
+      const hcap  = hasHcap ? num(vals[0]) : NaN;
+      const home  = num(hasHcap ? vals[1] : vals[0]);
+      const away  = num(hasHcap ? (vals[2] ?? "") : vals[1]);
+      if (!valid(home)) return null;
+      const o: Record<string, number> = { home };
+      if (valid(away)) o["away"] = away;
+      if (!isNaN(hcap)) o["handicap"] = hcap;
+      return { bookmaker: name, odds: o };
+    }
+    case "btts": {
+      if (vals.length < 2) return null;
+      const [yes, no] = [num(vals[0]), num(vals[1])];
+      if (!valid(yes) || !valid(no)) return null;
+      return { bookmaker: name, odds: { yes, no } };
+    }
+    case "dc": {
+      if (vals.length < 2) return null;
+      const [v1, v2, v3] = [num(vals[0]), num(vals[1]), vals[2] ? num(vals[2]) : NaN];
+      if (!valid(v1) || !valid(v2)) return null;
+      const o: Record<string, number> = { "1X": v1, "12": v2 };
+      if (valid(v3)) o["X2"] = v3;
+      return { bookmaker: name, odds: o };
+    }
+    case "dnb": {
+      if (vals.length < 2) return null;
+      const [h, a] = [num(vals[0]), num(vals[1])];
+      if (!valid(h) || !valid(a)) return null;
+      return { bookmaker: name, odds: { home: h, away: a } };
+    }
+    case "eh": {
+      if (vals.length < 3) return null;
+      const hasHcap = vals[0].startsWith("+") || vals[0].startsWith("-");
+      if (hasHcap) {
+        const hcap = num(vals[0]);
+        const [h, d, a] = [num(vals[1]), num(vals[2]), num(vals[3] ?? "")];
+        if (!valid(h)) return null;
+        const o: Record<string, number> = { handicap: hcap, "1": h };
+        if (valid(d)) o["X"] = d;
+        if (valid(a)) o["2"] = a;
+        return { bookmaker: name, odds: o };
+      }
+      const [h, d, a] = [num(vals[0]), num(vals[1]), num(vals[2])];
+      if (!valid(h) || !valid(d)) return null;
+      return { bookmaker: name, odds: { "1": h, "X": d, "2": a } };
+    }
+    case "htft": {
+      if (vals.length < 4) return null;
+      const o: Record<string, number> = {};
+      const labels = ["1/1","1/X","1/2","X/1","X/X","X/2","2/1","2/X","2/2"];
+      for (let k = 0; k < Math.min(vals.length, labels.length); k++) {
+        const v = num(vals[k]);
+        if (valid(v)) o[labels[k]] = v;
+      }
+      return Object.keys(o).length >= 4 ? { bookmaker: name, odds: o } : null;
+    }
+    case "oe": {
+      if (vals.length < 2) return null;
+      const [odd, even] = [num(vals[0]), num(vals[1])];
+      if (!valid(odd) || !valid(even)) return null;
+      return { bookmaker: name, odds: { odd, even } };
+    }
+    case "cs": {
+      // Correct score: many values, skip for now
+      return null;
+    }
+    default:
+      return null;
+  }
+}
+
+// ── DOM-row fallback (when pageText is unavailable) ───────────────────────────
+
+function parseDomOddsRowsFallback(rows: OddsRow[], odds: Partial<OPMatchOdds>): void {
+  const entries1x2: BookmakerEntry[] = [];
+  const entries2val: BookmakerEntry[] = [];
+
+  for (const { bookmaker, values } of rows) {
+    if (!bookmaker || values.length < 2) continue;
+    if (!values.every(v => v >= 1.01 && v <= 500)) continue;
+
+    if (values.length === 3) {
+      entries1x2.push({ bookmaker, odds: { "1": values[0], "X": values[1], "2": values[2] } });
+    } else if (values.length === 2) {
+      entries2val.push({ bookmaker, odds: { yes: values[0], no: values[1] } });
+    }
+  }
+
+  if (entries1x2.length > 0 && (!odds["1x2"] || odds["1x2"].length === 0))
     odds["1x2"] = entries1x2;
-  }
-  if (entries2val.length > 0 && (!odds["btts"] || odds["btts"].length === 0)) {
+  if (entries2val.length > 0 && (!odds["btts"] || odds["btts"].length === 0))
     odds["btts"] = entries2val;
-  }
 }
 
 function extractOddsFromNextData(data: Record<string, unknown>, odds: Partial<OPMatchOdds>) {
