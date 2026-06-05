@@ -29,7 +29,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "PORT=5000 pnpm --filter @workspace/api-server run dev"
+args = "export PORT=5000 BASE_PATH=/ && cd artifacts/processing-engine && ../../node_modules/.pnpm/node_modules/.bin/vite --config vite.config.ts"
 waitForPort = 5000
 
 [agent]
@@ -43,14 +43,6 @@ timeoutMs = 20000
 [[ports]]
 localPort = 5000
 externalPort = 80
-
-[[ports]]
-localPort = 8082
-externalPort = 3001
-
-[[ports]]
-localPort = 23529
-externalPort = 3000
 
 [nix]
 channel = "stable-25_05"
