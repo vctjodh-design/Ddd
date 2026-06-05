@@ -13,7 +13,7 @@
  *   scopeId:       2=FT   4=1H   6=2H
  */
 import * as cheerio from "cheerio";
-import { browserFetch, browserFetchHashPage, type InterceptedResponse } from "./browserScraper.js";
+import { browserFetch, browserFetchHashPage, type InterceptedResponse, type DomLink } from "./browserScraper.js";
 
 const OP_BASE = "https://www.oddsportal.com";
 
@@ -146,9 +146,40 @@ function buildResultsUrl(oddsPortalPath: string, year: number): string {
   const league  = parts.slice(1).join("/");
   const currentYear = new Date().getFullYear();
 
-  // OddsPortal: current year uses the base slug, previous years append "-YEAR"
-  const slugWithYear = year === currentYear ? league : `${league}-${year}`;
+  // OddsPortal URL patterns:
+  //   Current season (currentYear/currentYear+1): no year suffix → /results/
+  //   Previous seasons: {league}-{startYear}-{endYear}/results/
+  //   where startYear = year-1, endYear = year (e.g. year=2025 → 2024-2025)
+  //
+  // Note: some older leagues used {league}-{year}/results/ (single year) but
+  // the standard modern format is always the double-year form.
+  let slugWithYear: string;
+  if (year >= currentYear) {
+    // Current or future season — base URL (no suffix)
+    slugWithYear = league;
+  } else {
+    // Previous season: use start-end year format
+    slugWithYear = `${league}-${year - 1}-${year}`;
+  }
   return `${OP_BASE}/football/${country}/${slugWithYear}/results/`;
+}
+
+/** Returns candidate URLs to try in order for a given year. */
+function buildResultsUrlCandidates(oddsPortalPath: string, year: number): string[] {
+  const parts = oddsPortalPath.split("/");
+  const country = parts[0];
+  const league  = parts.slice(1).join("/");
+  const base    = `${OP_BASE}/football/${country}`;
+  const currentYear = new Date().getFullYear();
+
+  if (year >= currentYear) {
+    return [`${base}/${league}/results/`];
+  }
+  return [
+    `${base}/${league}-${year - 1}-${year}/results/`,  // 2024-2025 format (standard)
+    `${base}/${league}-${year}/results/`,               // 2025 format (some leagues)
+    `${base}/${league}/results/`,                       // fallback: base URL
+  ];
 }
 
 // ── Parse match list from results page ───────────────────────────────────────
@@ -175,7 +206,8 @@ function parseNextDataMatches(data: Record<string, unknown>, pageUrl: string): O
   const dehy = dig(data, "props", "pageProps", "dehydratedState", "queries");
   if (Array.isArray(dehy)) {
     for (const q of dehy) {
-      const data2 = (q as Record<string, unknown>)["state"]?.["data"];
+      const state = (q as Record<string, unknown>)["state"] as Record<string, unknown> | undefined;
+      const data2 = state?.["data"];
       if (Array.isArray(data2)) eventLists.push(...data2);
     }
   }
@@ -253,7 +285,7 @@ function parseHtmlMatches(html: string, baseUrl: string): OPMatch[] {
       if (/^\d:\d/.test(t) || /^\d-\d/.test(t)) {
         const [hs, as_] = t.split(/[:\-]/);
         homeScore = parseInt(hs ?? "0"); awayScore = parseInt(as_ ?? "0");
-        return false;
+        return false as unknown as void;
       }
     });
 
@@ -392,24 +424,143 @@ function parseInterceptedOdds(
   }
 }
 
+// ── DOM-based match extraction (OddsPortal CSR / Vue SPA) ────────────────────
+
+/**
+ * Parse match data from DomLinks captured by the Playwright browser walker.
+ *
+ * OddsPortal (as of 2025) renders via a Vue SPA with encrypted API responses.
+ * Match data only exists in the fully-rendered DOM; no __NEXT_DATA__ and no
+ * interceptable plaintext JSON.  The rendered link text has the format:
+ *
+ *   "{Status}{ShortStatus}{HomeTeam}{HomeScore}{HomeScore}–{AwayScore}{AwayTeam}{AwayScore}"
+ *
+ * e.g. "FinishedFINKabylie11–0ASO Chlef0"
+ *  → home Kabylie 1 : 0 away ASO Chlef
+ *
+ * The home score digit appears TWICE (individual team display + score display)
+ * so we extract it from the half-width slice of the digits before "–".
+ *
+ * Date headers appear as text nodes like "07 Jun 2025" in the DOM; the walker
+ * in browserScraper sets `link.date` to the closest preceding date header.
+ */
+function parseDomMatchLinks(domLinks: DomLink[], fallbackYear: number): OPMatch[] {
+  const STATUS_PREFIX = /^(Finished|Postponed|Cancelled|Abandoned|WalkOver|FIN|PP|ABA|CAN|WO|Aw\.W\.|Pen\.)+/i;
+  const EN_DASH = /[\u2013\u2014\-]/; // en-dash, em-dash, hyphen
+
+  const matches: OPMatch[] = [];
+
+  for (const link of domLinks) {
+    const { href, text, date } = link;
+
+    // Only process match/H2H links, skip navigation links
+    if (!href.includes("/football/")) continue;
+    if (
+      href.includes("/results") ||
+      href.includes("/standings") ||
+      href.includes("/odds") ||
+      href.includes("/next-matches") ||
+      href.includes("/?")
+    ) continue;
+
+    // Must contain a score separator to be a result
+    if (!EN_DASH.test(text)) continue;
+
+    // Remove status prefix
+    const cleaned = text.replace(STATUS_PREFIX, "");
+
+    // Find score: digits – digits (the scoreline embedded in the text)
+    const scoreMatch = cleaned.match(/(\d+)([\u2013\u2014\-])(\d+)/);
+    if (!scoreMatch) continue;
+
+    const rawHome = scoreMatch[1]; // e.g. "44" for score 4, "1010" for score 10
+    const rawAway = scoreMatch[3]; // just the scoreline away digits (e.g. "0")
+
+    // Home score appears doubled before "–"; take the first half
+    const homeScore = parseInt(rawHome.slice(0, Math.ceil(rawHome.length / 2)), 10);
+    const awayScore = parseInt(rawAway, 10);
+    if (isNaN(homeScore) || isNaN(awayScore)) continue;
+
+    const scoreStr = scoreMatch[0];
+    const scoreIdx = cleaned.indexOf(scoreStr);
+    const beforeScore = cleaned.slice(0, scoreIdx);
+    const afterScore  = cleaned.slice(scoreIdx + scoreStr.length);
+
+    // Home team = text before score, strip trailing score digits
+    const homeTeam = beforeScore.replace(/\d+$/, "").trim();
+    // Away team = text after score, strip trailing score digits
+    const awayTeam = afterScore.replace(/\d+$/, "").trim();
+
+    if (!homeTeam || !awayTeam) continue;
+
+    // Parse date from the DOM header or fallback to year
+    let matchDate = new Date().toISOString().slice(0, 10);
+    if (date) {
+      const parsed = parseDateText(date);
+      if (parsed && !isNaN(Date.parse(parsed))) matchDate = parsed;
+    }
+
+    // Extract match hash — from H2H anchor fragment (#AbCdEfGh) or trailing slug part
+    let matchHash = "";
+    const fragment = href.split("#")[1] ?? "";
+    if (fragment && fragment.length >= 6) {
+      matchHash = fragment;
+    } else {
+      // Fallback: last path segment's trailing alphanumeric
+      const lastSeg = href.split("/").filter(Boolean).pop() ?? "";
+      const m = lastSeg.match(/([A-Za-z0-9]{6,})$/);
+      if (m) matchHash = m[1];
+    }
+
+    // Build a normalised match URL
+    // H2H URL format: /football/h2h/{team1-HASH}/{team2-HASH}/#matchHash
+    // We store the canonical H2H URL so odds can be fetched later via the hash
+    const matchUrl = href.startsWith("http") ? new URL(href).pathname + (fragment ? `#${fragment}` : "") : href;
+
+    matches.push({
+      date: matchDate,
+      homeTeam,
+      awayTeam,
+      homeScore,
+      awayScore,
+      matchUrl,
+      matchHash,
+    });
+  }
+
+  return matches;
+}
+
 // ── Shared page-content parser ────────────────────────────────────────────────
 
 function extractMatchesFromContent(
   html: string,
   intercepted: InterceptedResponse[],
+  domLinks: DomLink[],
   url: string,
   onProgress?: (msg: string) => void
 ): OPMatch[] {
   let pageMatches: OPMatch[] = [];
 
-  // 1. Intercepted API responses (most reliable)
+  // 1. Intercepted API responses (most reliable when available)
   pageMatches = parseInterceptedMatches(intercepted, url);
   if (pageMatches.length > 0) {
     onProgress?.(`  API intercept: found ${pageMatches.length} matches`);
     return pageMatches;
   }
 
-  // 2. __NEXT_DATA__ embedded JSON
+  // 2. Rendered DOM links — primary method for OddsPortal's CSR Vue SPA
+  //    (as of 2025 OddsPortal uses encrypted responses; only the rendered DOM has the data)
+  if (domLinks.length > 0) {
+    const yearGuess = new Date().getFullYear();
+    pageMatches = parseDomMatchLinks(domLinks, yearGuess);
+    if (pageMatches.length > 0) {
+      onProgress?.(`  DOM links: found ${pageMatches.length} matches`);
+      return pageMatches;
+    }
+  }
+
+  // 3. __NEXT_DATA__ embedded JSON (legacy, OddsPortal SSR era)
   const nextData = extractNextData(html);
   if (nextData) {
     pageMatches = parseNextDataMatches(nextData, url);
@@ -419,7 +570,7 @@ function extractMatchesFromContent(
     }
   }
 
-  // 3. Classic HTML table parsing
+  // 4. Classic HTML table parsing (very old OddsPortal)
   pageMatches = parseHtmlMatches(html, url);
   if (pageMatches.length > 0) {
     onProgress?.(`  HTML parse: found ${pageMatches.length} matches`);
@@ -434,42 +585,61 @@ export async function fetchMatchList(
   year: number,
   onProgress?: (msg: string) => void
 ): Promise<OPMatch[]> {
-  const startUrl = buildResultsUrl(oddsPortalPath, year);
+  // Build candidate URLs (try in order: correct format first, then fallbacks)
+  const candidateUrls = buildResultsUrlCandidates(oddsPortalPath, year);
+  const startUrl = candidateUrls[0];
   onProgress?.(`Fetching match list from OddsPortal: ${startUrl}`);
 
   const allMatches: OPMatch[] = [];
   const seen = new Set<string>();
   const MAX_PAGES = 20;
 
-  // ── Attempt 1: plain HTTP (fast) ──────────────────────────────────────────
-  let plainBlocked = false;
-  {
-    let url: string | null = startUrl;
-    let page = 1;
+  function addMatches(pageMatches: OPMatch[]): number {
+    let newCount = 0;
+    for (const m of pageMatches) {
+      const key = `${m.date}|${m.homeTeam}|${m.awayTeam}`;
+      if (!seen.has(key)) { seen.add(key); allMatches.push(m); newCount++; }
+    }
+    return newCount;
+  }
 
+  // ── Attempt 1: plain HTTP (fast, no JS rendering) ─────────────────────────
+  // Try each candidate URL until one returns match data
+  let workingPlainUrl: string | null = null;
+  for (const candidateUrl of candidateUrls) {
+    onProgress?.(`[plain] Trying ${candidateUrl}`);
+    const result = await opFetch(candidateUrl);
+    if (result.blocked) {
+      onProgress?.(`⚠ Plain fetch blocked by Cloudflare — switching to browser mode`);
+      workingPlainUrl = null;
+      break;
+    }
+    if (!result.html) continue;
+    const pageMatches = extractMatchesFromContent(result.html, [], [], candidateUrl, onProgress);
+    if (pageMatches.length > 0) {
+      workingPlainUrl = candidateUrl;
+      const newCount = addMatches(pageMatches);
+      onProgress?.(`  +${newCount} new (total: ${allMatches.length})`);
+      break;
+    }
+  }
+
+  // If plain first page worked, continue paginating
+  if (workingPlainUrl && allMatches.length > 0) {
+    let url: string | null = null;
+    {
+      const r = await opFetch(workingPlainUrl);
+      url = r.html ? findNextPageUrl(r.html, workingPlainUrl) : null;
+    }
+    let page = 2;
     while (url && page <= MAX_PAGES) {
       onProgress?.(`[plain] Fetching page ${page}…`);
       const result = await opFetch(url);
-      if (!result.html) {
-        if (result.blocked) {
-          plainBlocked = true;
-          onProgress?.(`⚠ Plain fetch blocked by Cloudflare — switching to browser mode`);
-        } else {
-          onProgress?.(`⚠ Could not fetch page ${page}`);
-        }
-        break;
-      }
-
-      const pageMatches = extractMatchesFromContent(result.html, [], url, onProgress);
+      if (!result.html) { onProgress?.(`⚠ Could not fetch page ${page}`); break; }
+      const pageMatches = extractMatchesFromContent(result.html, [], [], url, onProgress);
       if (pageMatches.length === 0) { onProgress?.(`  No matches on page ${page} — stopping`); break; }
-
-      let newCount = 0;
-      for (const m of pageMatches) {
-        const key = `${m.date}|${m.homeTeam}|${m.awayTeam}`;
-        if (!seen.has(key)) { seen.add(key); allMatches.push(m); newCount++; }
-      }
+      const newCount = addMatches(pageMatches);
       onProgress?.(`  +${newCount} new (total: ${allMatches.length})`);
-
       const nextUrl = findNextPageUrl(result.html, url);
       url = nextUrl; page++;
       if (url) await new Promise(r => setTimeout(r, 1500));
@@ -481,43 +651,65 @@ export async function fetchMatchList(
     return allMatches;
   }
 
-  // ── Attempt 2: Playwright browser (bypasses Cloudflare) ───────────────────
-  onProgress?.(`🌐 Launching browser (Playwright/Chromium) to bypass Cloudflare…`);
-  onProgress?.(`   This takes 10-20 s per page — please wait.`);
+  // ── Attempt 2: Playwright browser (bypasses Cloudflare + handles CSR) ─────
+  // OddsPortal uses a Vue SPA with encrypted API responses; data only exists in
+  // the rendered DOM which Playwright extracts via page.evaluate() DOM walker.
+  onProgress?.(`🌐 Launching browser (Playwright/Chromium)…`);
+  onProgress?.(`   OddsPortal CSR: match data extracted from rendered DOM (~25-40 s/page)`);
 
-  for (let page = 1; page <= MAX_PAGES; page++) {
+  // Find the first candidate URL that the browser can load successfully
+  let browserStartUrl = startUrl;
+  for (const candidateUrl of candidateUrls) {
+    onProgress?.(`[browser] Trying ${candidateUrl}`);
+    const probe = await browserFetch(candidateUrl);
+    if (probe.blocked) {
+      onProgress?.(`❌ Browser blocked by Cloudflare at ${candidateUrl}`);
+      continue;
+    }
+    if (!probe.html) {
+      onProgress?.(`⚠ Browser got no content for ${candidateUrl}`);
+      continue;
+    }
+    // Check if this URL yielded any matches (DOM or HTML)
+    const probeMatches = extractMatchesFromContent(probe.html, probe.intercepted, probe.domLinks, candidateUrl, onProgress);
+    if (probeMatches.length > 0) {
+      browserStartUrl = candidateUrl;
+      const newCount = addMatches(probeMatches);
+      onProgress?.(`  +${newCount} new from page 1 (total: ${allMatches.length})`);
+      break;
+    }
+    onProgress?.(`  No matches at ${candidateUrl} — trying next candidate`);
+  }
+
+  if (allMatches.length === 0) {
+    onProgress?.(`⚠ No matches found at any candidate URL — OddsPortal may have changed or the league slug is incorrect`);
+    return allMatches;
+  }
+
+  // Paginate remaining pages with the working URL
+  for (let page = 2; page <= MAX_PAGES; page++) {
     onProgress?.(`[browser] Fetching page ${page}…`);
-    const result = page === 1
-      ? await browserFetch(startUrl)
-      : await browserFetchHashPage(startUrl, page);
+    const result = await browserFetchHashPage(browserStartUrl, page);
 
     if (result.blocked) {
-      onProgress?.(`❌ Browser was also blocked — OddsPortal may have updated bot protection`);
+      onProgress?.(`❌ Browser blocked by Cloudflare on page ${page}`);
       break;
     }
     if (!result.html) {
-      onProgress?.(`⚠ Browser fetch returned no content on page ${page}`);
+      onProgress?.(`⚠ Browser got no content on page ${page}`);
       break;
     }
 
-    const pageMatches = extractMatchesFromContent(result.html, result.intercepted, startUrl, onProgress);
+    const pageMatches = extractMatchesFromContent(result.html, result.intercepted, result.domLinks, browserStartUrl, onProgress);
     if (pageMatches.length === 0) {
       onProgress?.(`  No matches on page ${page} — pagination complete`);
       break;
     }
 
-    let newCount = 0;
-    for (const m of pageMatches) {
-      const key = `${m.date}|${m.homeTeam}|${m.awayTeam}`;
-      if (!seen.has(key)) { seen.add(key); allMatches.push(m); newCount++; }
-    }
+    const newCount = addMatches(pageMatches);
     onProgress?.(`  +${newCount} new (total: ${allMatches.length})`);
 
-    // Check for more pages using the HTML next-page logic
-    const nextUrl = findNextPageUrl(result.html, startUrl);
-    if (!nextUrl) break;
-
-    // Brief pause between browser pages
+    if (!findNextPageUrl(result.html, browserStartUrl)) break;
     await new Promise(r => setTimeout(r, 1000));
   }
 

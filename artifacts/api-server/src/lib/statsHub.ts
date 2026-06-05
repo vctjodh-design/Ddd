@@ -8,7 +8,7 @@ const SH_HEADERS: Record<string, string> = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
   "Accept": "application/json, text/plain, */*",
   "Accept-Language": "en-US,en;q=0.9",
-  "Accept-Encoding": "gzip, deflate, br, zstd",
+  "Accept-Encoding": "gzip, deflate",
   "Cache-Control": "no-cache",
   "Pragma": "no-cache",
   "Origin": "https://www.statshub.com",

@@ -17,10 +17,20 @@ export interface InterceptedResponse {
   json: unknown;
 }
 
+/** A hyperlink extracted from the rendered DOM in document order. */
+export interface DomLink {
+  href: string;
+  text: string;
+  /** Date string captured from the nearest preceding date-header in the DOM (may be empty). */
+  date: string;
+}
+
 export interface BrowserFetchResult {
   html:        string | null;
   intercepted: InterceptedResponse[];
   blocked:     boolean;
+  /** Anchor tags extracted from the rendered DOM in document order (after JS hydration). */
+  domLinks:    DomLink[];
 }
 
 const CHROMIUM_PATH = process.env.REPLIT_PLAYWRIGHT_CHROMIUM_EXECUTABLE;
@@ -72,7 +82,7 @@ export async function browserFetch(
     browser = await getBrowser();
   } catch (e) {
     console.error("[BrowserScraper] Could not launch browser:", e);
-    return { html: null, intercepted: [], blocked: false };
+    return { html: null, intercepted: [], blocked: false, domLinks: [] };
   }
 
   const intercepted: InterceptedResponse[] = [];
@@ -112,29 +122,106 @@ export async function browserFetch(
       Object.defineProperty(navigator, "webdriver", { get: () => false });
     });
 
-    const response = await page.goto(url, {
-      waitUntil: "networkidle",
-      timeout:   timeoutMs,
-    });
+    // Use "commit" so Playwright doesn't throw on 4xx/5xx status codes.
+    // Then wait for networkidle separately so intercepted responses have time to settle.
+    await page.goto(url, { waitUntil: "commit", timeout: timeoutMs }).catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
 
-    // Detect Cloudflare challenge (shouldn't happen with real browser but guard anyway)
-    const title = await page.title().catch(() => "");
-    const isBlocked =
+    // Detect Cloudflare challenge — give it up to 10 s to solve the JS challenge
+    let title = await page.title().catch(() => "");
+    let isCfChallenge =
       title.toLowerCase().includes("just a moment") ||
       title.toLowerCase().includes("attention required") ||
       (await page.$("div#challenge-running").catch(() => null)) !== null;
 
-    if (isBlocked) {
-      console.warn("[BrowserScraper] Cloudflare challenge even with browser at:", url);
-      return { html: null, intercepted, blocked: true };
+    if (isCfChallenge) {
+      console.log("[BrowserScraper] Cloudflare challenge detected — waiting up to 10 s…");
+      await page.waitForFunction(
+        "!document.querySelector('#challenge-running') && !document.title.toLowerCase().includes('just a moment')",
+        { timeout: 10_000, polling: 500 }
+      ).catch(() => {});
+      title = await page.title().catch(() => "");
+      isCfChallenge =
+        title.toLowerCase().includes("just a moment") ||
+        (await page.$("div#challenge-running").catch(() => null)) !== null;
     }
 
-    const html = await page.content();
-    return { html, intercepted, blocked: false };
+    if (isCfChallenge) {
+      console.warn("[BrowserScraper] Still blocked by Cloudflare at:", url);
+      return { html: null, intercepted, blocked: true, domLinks: [] };
+    }
+
+    // Scroll to trigger lazy-loaded content (OddsPortal renders match rows via React)
+    await page.evaluate("window.scrollBy(0, 800)").catch(() => {});
+    await new Promise(r => setTimeout(r, 2_000));
+    await page.evaluate("window.scrollBy(0, 1600)").catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 3_000));
+
+    const html = await page.content().catch(() => null);
+    if (!html || html.length < 500) {
+      console.warn("[BrowserScraper] Page content empty or too short for:", url);
+      return { html: null, intercepted, blocked: false, domLinks: [] };
+    }
+
+    // ── DOM link extraction ────────────────────────────────────────────────────
+    // OddsPortal is fully client-side rendered with encrypted API responses.
+    // Match data only exists in the rendered DOM, not in interceptable JSON.
+    // Walk the DOM in document order, tracking date headers and match links.
+    // NOTE: this function runs inside the browser via page.evaluate(); use plain
+    //       JS (no TypeScript DOM types) to avoid compilation errors.
+    const domLinks: DomLink[] = await page.evaluate(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (): Array<{ href: string; text: string; date: string }> => {
+        const items: Array<{ href: string; text: string; date: string }> = [];
+        let currentDate = "";
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        function visit(node: any): void {
+          if (node.nodeType === 3 /* TEXT_NODE */) {
+            const text: string = (node.textContent ?? "").trim();
+            if (text.length > 0 && text.length < 25 && (
+              /^\d{1,2}\s+\w{3,9}\s+\d{4}$/.test(text) ||
+              /^\d{2}\.\d{2}\.\d{4}$/.test(text)
+            )) {
+              currentDate = text;
+            }
+            return;
+          }
+          if (node.nodeType !== 1 /* ELEMENT_NODE */) return;
+
+          if (node.tagName === "A") {
+            const href: string = node.getAttribute("href") ?? "";
+            const text: string = (node.textContent ?? "").trim();
+            if (href.includes("/football/") && text.length > 0) {
+              const pathParts: string[] = href.split("/").filter(Boolean);
+              if (pathParts.length >= 3 && !href.includes("/?") && !href.endsWith("/football/")) {
+                items.push({ href, text, date: currentDate });
+                return; // don't recurse into the link's children
+              }
+            }
+          }
+
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          for (const child of Array.from<any>(node.childNodes)) {
+            visit(child);
+          }
+        }
+
+        // `document` is available in the browser context where evaluate() runs
+        // @ts-ignore
+        visit(document.body); // eslint-disable-line no-undef
+        return items;
+      }
+    ).catch(() => []);
+
+    console.log(`[BrowserScraper] DOM links extracted: ${domLinks.length} for ${url}`);
+
+    return { html, intercepted, blocked: false, domLinks };
 
   } catch (e) {
     console.warn("[BrowserScraper] Navigation error for", url, ":", e);
-    return { html: null, intercepted, blocked: false };
+    return { html: null, intercepted, blocked: false, domLinks: [] };
   } finally {
     await context?.close().catch(() => {});
   }
