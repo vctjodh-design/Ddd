@@ -5,12 +5,11 @@
  *
  * Strategy:
  *  1. Launch a singleton Chromium instance (kept alive across requests for speed)
- *  2. Per-request: open a fresh browser context (isolated cookies/storage)
- *  3. Intercept ALL JSON responses from the target domain
- *  4. Navigate to the URL, wait for network idle
- *  5. Return the page HTML + all intercepted API JSON responses
+ *  2. Match-list pages: open a fresh browser context (isolated cookies/storage)
+ *  3. Odds pages: reuse a persistent context so Cloudflare cookies carry over —
+ *     after the first clearance the remaining matches need no re-challenge (~3-5 s each)
  */
-import { chromium, Browser, BrowserContext } from "playwright";
+import { chromium, Browser, BrowserContext, Page } from "playwright";
 
 export interface InterceptedResponse {
   url:  string;
@@ -34,6 +33,17 @@ export interface BrowserFetchResult {
 }
 
 const CHROMIUM_PATH = process.env.REPLIT_PLAYWRIGHT_CHROMIUM_EXECUTABLE;
+
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+
+const EXTRA_HEADERS = {
+  "Accept-Language":    "en-US,en;q=0.9",
+  "sec-ch-ua":          '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
+  "sec-ch-ua-mobile":   "?0",
+  "sec-ch-ua-platform": '"Windows"',
+};
 
 let _browser: Browser | null = null;
 
@@ -66,8 +76,78 @@ export async function closeBrowser(): Promise<void> {
   }
 }
 
+// ── Persistent odds context ───────────────────────────────────────────────────
+// Reused across all match pages in a job so Cloudflare cookies persist.
+// This turns 30-40 s/match (re-challenge) into ~3-5 s/match.
+
+let _oddsContext: BrowserContext | null = null;
+
+async function getOddsContext(): Promise<BrowserContext> {
+  const browser = await getBrowser();
+  if (_oddsContext) {
+    try {
+      // Health-check: if the browser disconnected the context is invalid
+      await _oddsContext.cookies();
+    } catch {
+      _oddsContext = null;
+    }
+  }
+  if (!_oddsContext) {
+    console.log("[BrowserScraper] Creating persistent odds context…");
+    _oddsContext = await browser.newContext({
+      userAgent: USER_AGENT,
+      viewport:  { width: 1920, height: 1080 },
+      locale:    "en-US",
+      timezoneId: "America/New_York",
+      extraHTTPHeaders: EXTRA_HEADERS,
+    });
+  }
+  return _oddsContext;
+}
+
+export async function resetOddsContext(): Promise<void> {
+  if (_oddsContext) {
+    await _oddsContext.close().catch(() => {});
+    _oddsContext = null;
+    console.log("[BrowserScraper] Odds context reset");
+  }
+}
+
+// ── Anti-automation init script ───────────────────────────────────────────────
+
+async function applyStealthScript(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => false });
+  });
+}
+
+// ── Cloudflare challenge handler ──────────────────────────────────────────────
+
+async function waitForCloudflare(page: Page, maxMs = 12_000): Promise<boolean> {
+  const title = await page.title().catch(() => "");
+  const hasCfEl = await page.$("div#challenge-running, #cf-challenge-running").catch(() => null);
+  const isCf =
+    title.toLowerCase().includes("just a moment") ||
+    title.toLowerCase().includes("attention required") ||
+    hasCfEl !== null;
+
+  if (!isCf) return false;
+
+  console.log("[BrowserScraper] Cloudflare challenge — waiting…");
+  await page.waitForFunction(
+    "!document.querySelector('#challenge-running,#cf-challenge-running') && !document.title.toLowerCase().includes('just a moment')",
+    { timeout: maxMs, polling: 500 }
+  ).catch(() => {});
+
+  const titleAfter = await page.title().catch(() => "");
+  return titleAfter.toLowerCase().includes("just a moment");
+}
+
+// ── Match-list fetch (fresh context per call) ─────────────────────────────────
+
 /**
  * Fetch a page with a real Chromium browser.
+ * Opens a fresh isolated context (new cookies) — used for results/listing pages.
  * @param url           Full URL to navigate to
  * @param interceptHost Hostname whose JSON responses to intercept (e.g. "oddsportal.com")
  * @param timeoutMs     Navigation timeout in ms (default 35 s)
@@ -86,25 +166,17 @@ export async function browserFetch(
   }
 
   const intercepted: InterceptedResponse[] = [];
-
   let context: BrowserContext | null = null;
+
   try {
     context = await browser.newContext({
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-        "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-      viewport:         { width: 1920, height: 1080 },
-      locale:           "en-US",
-      timezoneId:       "America/New_York",
-      extraHTTPHeaders: {
-        "Accept-Language":    "en-US,en;q=0.9",
-        "sec-ch-ua":          '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
-        "sec-ch-ua-mobile":   "?0",
-        "sec-ch-ua-platform": '"Windows"',
-      },
+      userAgent: USER_AGENT,
+      viewport:  { width: 1920, height: 1080 },
+      locale:    "en-US",
+      timezoneId: "America/New_York",
+      extraHTTPHeaders: EXTRA_HEADERS,
     });
 
-    // Intercept all JSON responses from the target host
     context.on("response", async (response) => {
       try {
         if (!response.url().includes(interceptHost)) return;
@@ -116,37 +188,13 @@ export async function browserFetch(
     });
 
     const page = await context.newPage();
+    await applyStealthScript(page);
 
-    // Hide automation signals
-    await page.addInitScript(() => {
-      Object.defineProperty(navigator, "webdriver", { get: () => false });
-    });
-
-    // Use "commit" so Playwright doesn't throw on 4xx/5xx status codes.
-    // Then wait for networkidle separately so intercepted responses have time to settle.
     await page.goto(url, { waitUntil: "commit", timeout: timeoutMs }).catch(() => {});
     await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => {});
 
-    // Detect Cloudflare challenge — give it up to 10 s to solve the JS challenge
-    let title = await page.title().catch(() => "");
-    let isCfChallenge =
-      title.toLowerCase().includes("just a moment") ||
-      title.toLowerCase().includes("attention required") ||
-      (await page.$("div#challenge-running").catch(() => null)) !== null;
-
-    if (isCfChallenge) {
-      console.log("[BrowserScraper] Cloudflare challenge detected — waiting up to 10 s…");
-      await page.waitForFunction(
-        "!document.querySelector('#challenge-running') && !document.title.toLowerCase().includes('just a moment')",
-        { timeout: 10_000, polling: 500 }
-      ).catch(() => {});
-      title = await page.title().catch(() => "");
-      isCfChallenge =
-        title.toLowerCase().includes("just a moment") ||
-        (await page.$("div#challenge-running").catch(() => null)) !== null;
-    }
-
-    if (isCfChallenge) {
+    const stillBlocked = await waitForCloudflare(page);
+    if (stillBlocked) {
       console.warn("[BrowserScraper] Still blocked by Cloudflare at:", url);
       return { html: null, intercepted, blocked: true, domLinks: [] };
     }
@@ -164,14 +212,7 @@ export async function browserFetch(
       return { html: null, intercepted, blocked: false, domLinks: [] };
     }
 
-    // ── DOM link extraction ────────────────────────────────────────────────────
-    // OddsPortal is fully client-side rendered with encrypted API responses.
-    // Match data only exists in the rendered DOM, not in interceptable JSON.
-    // Walk the DOM in document order, tracking date headers and match links.
-    // NOTE: this function runs inside the browser via page.evaluate(); use plain
-    //       JS (no TypeScript DOM types) to avoid compilation errors.
     const domLinks: DomLink[] = await page.evaluate(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (): Array<{ href: string; text: string; date: string }> => {
         const items: Array<{ href: string; text: string; date: string }> = [];
         let currentDate = "";
@@ -197,7 +238,7 @@ export async function browserFetch(
               const pathParts: string[] = href.split("/").filter(Boolean);
               if (pathParts.length >= 3 && !href.includes("/?") && !href.endsWith("/football/")) {
                 items.push({ href, text, date: currentDate });
-                return; // don't recurse into the link's children
+                return;
               }
             }
           }
@@ -208,7 +249,6 @@ export async function browserFetch(
           }
         }
 
-        // `document` is available in the browser context where evaluate() runs
         // @ts-ignore
         visit(document.body); // eslint-disable-line no-undef
         return items;
@@ -216,7 +256,6 @@ export async function browserFetch(
     ).catch(() => []);
 
     console.log(`[BrowserScraper] DOM links extracted: ${domLinks.length} for ${url}`);
-
     return { html, intercepted, blocked: false, domLinks };
 
   } catch (e) {
@@ -241,4 +280,145 @@ export async function browserFetchHashPage(
     ? baseUrl
     : `${baseUrl.split("#")[0]}#/page/${pageNum}/`;
   return browserFetch(hashUrl, interceptHost, timeoutMs);
+}
+
+// ── Odds page fetch (persistent context — fast after first clearance) ──────────
+
+/**
+ * Fetch an OddsPortal match page using the persistent odds context.
+ * After the first Cloudflare clearance, subsequent calls are ~3-5 s each.
+ *
+ * Also extracts DOM-rendered odds (OddsPortal 2025 encrypts API responses;
+ * odds data only exists in the fully-rendered DOM).
+ */
+export async function fetchOddsPage(
+  url:           string,
+  interceptHost: string = "oddsportal.com",
+  timeoutMs:     number = 25_000
+): Promise<BrowserFetchResult & { oddsRows: OddsRow[] }> {
+  let context: BrowserContext;
+  try {
+    context = await getOddsContext();
+  } catch (e) {
+    console.error("[BrowserScraper] Could not get odds context:", e);
+    return { html: null, intercepted: [], blocked: false, domLinks: [], oddsRows: [] };
+  }
+
+  const intercepted: InterceptedResponse[] = [];
+  let page: Page | null = null;
+
+  const responseHandler = async (response: { url: () => string; headers: () => Record<string,string>; json: () => Promise<unknown> }) => {
+    try {
+      if (!response.url().includes(interceptHost)) return;
+      const ct = response.headers()["content-type"] ?? "";
+      if (!ct.includes("json")) return;
+      const json = await response.json().catch(() => null);
+      if (json !== null) intercepted.push({ url: response.url(), json });
+    } catch {}
+  };
+
+  try {
+    page = await context.newPage();
+    await applyStealthScript(page);
+    page.on("response", responseHandler);
+
+    await page.goto(url, { waitUntil: "commit", timeout: timeoutMs }).catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+
+    const stillBlocked = await waitForCloudflare(page, 12_000);
+    if (stillBlocked) {
+      console.warn("[BrowserScraper] Odds page still blocked by Cloudflare at:", url);
+      return { html: null, intercepted, blocked: true, domLinks: [], oddsRows: [] };
+    }
+
+    // Short wait for Vue/React to render the odds table
+    await new Promise(r => setTimeout(r, 2_500));
+    await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
+
+    const html = await page.content().catch(() => null);
+    if (!html || html.length < 500) {
+      return { html: null, intercepted, blocked: false, domLinks: [], oddsRows: [] };
+    }
+
+    // ── DOM odds extraction ─────────────────────────────────────────────────
+    // OddsPortal 2025 Vue SPA encrypts API responses; odds only exist in DOM.
+    // Walk the rendered DOM looking for bookmaker rows containing decimal odds.
+    const oddsRows: OddsRow[] = await page.evaluate((): OddsRow[] => {
+      const rows: OddsRow[] = [];
+
+      function isOddsValue(text: string): boolean {
+        const t = text.trim();
+        const n = parseFloat(t);
+        return !isNaN(n) && n >= 1.01 && n <= 999 && /^\d+(\.\d{1,3})?$/.test(t);
+      }
+
+      function getBookmakerName(el: Element): string {
+        // Try common OddsPortal class patterns
+        const nameEl =
+          el.querySelector('[class*="ookmaker" i] a, [class*="ookmaker" i]') ??
+          el.querySelector('p, span, a');
+        return (nameEl?.textContent ?? el.children[0]?.textContent ?? "").trim().slice(0, 60);
+      }
+
+      // Strategy A: find elements (div/tr/li) whose direct children include 2+ odds values
+      const candidates = Array.from(document.querySelectorAll("div, tr, li, section"));
+      const seen = new WeakSet<Element>();
+
+      for (const el of candidates) {
+        if (seen.has(el)) continue;
+        const children = Array.from(el.children);
+        const oddsEls = children.filter(c => isOddsValue(c.textContent ?? ""));
+        if (oddsEls.length >= 2 && oddsEls.length <= 15 && children.length >= 3) {
+          seen.add(el);
+          const values = oddsEls.map(c => parseFloat(c.textContent?.trim() ?? "0"));
+          const bookmaker = getBookmakerName(el);
+          if (bookmaker && bookmaker.length > 0 && values.every(v => v > 1)) {
+            rows.push({ bookmaker, values });
+          }
+        }
+      }
+
+      // Strategy B: if no rows found, scan page for all decimal numbers and group by Y position
+      if (rows.length === 0) {
+        const walker = document.createTreeWalker(document.body, 4 /* NodeFilter.SHOW_TEXT */);
+        const byLine: Map<number, { text: string; top: number; el: Element }[]> = new Map();
+
+        let node;
+        while ((node = walker.nextNode())) {
+          const text = (node.textContent ?? "").trim();
+          if (!isOddsValue(text)) continue;
+          const el = node.parentElement;
+          if (!el) continue;
+          const rect = el.getBoundingClientRect();
+          const lineKey = Math.round(rect.top / 5) * 5;
+          if (!byLine.has(lineKey)) byLine.set(lineKey, []);
+          byLine.get(lineKey)!.push({ text, top: rect.top, el });
+        }
+
+        for (const [, items] of byLine) {
+          if (items.length < 2) continue;
+          const values = items.map(i => parseFloat(i.text));
+          const ancestor = items[0].el.closest("div, tr, li") ?? items[0].el;
+          const bookmaker = getBookmakerName(ancestor);
+          rows.push({ bookmaker: bookmaker || "Unknown", values });
+        }
+      }
+
+      return rows;
+    }).catch(() => []);
+
+    console.log(`[BrowserScraper] Odds page: ${intercepted.length} API responses, ${oddsRows.length} DOM rows for ${url}`);
+    return { html, intercepted, blocked: false, domLinks: [], oddsRows };
+
+  } catch (e) {
+    console.warn("[BrowserScraper] Odds page navigation error:", url, e);
+    return { html: null, intercepted, blocked: false, domLinks: [], oddsRows: [] };
+  } finally {
+    await page?.close().catch(() => {});
+  }
+}
+
+export interface OddsRow {
+  bookmaker: string;
+  values: number[];
 }

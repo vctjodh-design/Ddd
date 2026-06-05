@@ -9,6 +9,7 @@ import {
 import { fetchMatchList, fetchMatchOdds, type OPMatch } from "./oddsPortal.js";
 import { fetchStatsHubTeamHistory } from "./statsHub.js";
 import { findTeamId, clearSearchCache } from "./statsHubSearch.js";
+import { resetOddsContext } from "./browserScraper.js";
 
 const MIN_MATCH_HISTORY = 20;
 
@@ -121,7 +122,7 @@ async function runJob(jobId: string, params: StartJobParams) {
       // Fetch bookmaker odds from OddsPortal match page
       let matchOdds: Awaited<ReturnType<typeof fetchMatchOdds>> = {};
       try {
-        matchOdds = await fetchMatchOdds(match, log);
+        matchOdds = await fetchMatchOdds(match, params.oddsPortalPath, log);
       } catch (e) {
         log(`  ↳ ⚠ Odds fetch error: ${e}`);
       }
@@ -192,5 +193,7 @@ async function runJob(jobId: string, params: StartJobParams) {
     updateJob(jobId, { status: "failed", error_message: msg, current_match: null });
   } finally {
     runningJobs.delete(jobId);
+    // Release the persistent browser context so cookies don't carry over between jobs
+    await resetOddsContext().catch(() => {});
   }
 }

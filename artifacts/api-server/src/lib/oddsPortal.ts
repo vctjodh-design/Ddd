@@ -13,7 +13,7 @@
  *   scopeId:       2=FT   4=1H   6=2H
  */
 import * as cheerio from "cheerio";
-import { browserFetch, browserFetchHashPage, type InterceptedResponse, type DomLink } from "./browserScraper.js";
+import { browserFetch, browserFetchHashPage, fetchOddsPage, type InterceptedResponse, type DomLink, type OddsRow } from "./browserScraper.js";
 
 const OP_BASE = "https://www.oddsportal.com";
 
@@ -135,6 +135,34 @@ export interface OPMatchOdds {
   "cs":     BookmakerEntry[];   // correct score (top 5 per team)
   "htft":   BookmakerEntry[];   // half time / full time
   "oe":     BookmakerEntry[];   // odd or even
+}
+
+// ── URL helpers ───────────────────────────────────────────────────────────────
+
+/** Converts a team name to an OddsPortal URL slug (lowercase, hyphens, ASCII). */
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")  // strip accents
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+/**
+ * Build the canonical OddsPortal match page URL from available components.
+ * Format: /football/{country}/{league}/{homeSlug}-{awaySlug}-{hash}/
+ * This is the URL that triggers bookmaker odds API calls, unlike H2H pages.
+ */
+function buildMatchPageUrl(
+  homeTeam:      string,
+  awayTeam:      string,
+  matchHash:     string,
+  oddsPortalPath: string
+): string {
+  if (!matchHash || !oddsPortalPath) return "";
+  const home = slugify(homeTeam);
+  const away = slugify(awayTeam);
+  return `${OP_BASE}/football/${oddsPortalPath}/${home}-${away}-${matchHash}/`;
 }
 
 // ── Build the results URL ────────────────────────────────────────────────────
@@ -719,21 +747,46 @@ export async function fetchMatchList(
 
 // ── Fetch odds for a single match ─────────────────────────────────────────────
 
+/**
+ * Fetch bookmaker odds for one match.
+ *
+ * @param match          Match data (must include matchHash for URL construction)
+ * @param oddsPortalPath League path, e.g. "algeria/ligue-1" — used to build the proper match URL
+ * @param onProgress     Optional log callback
+ */
 export async function fetchMatchOdds(
-  match: OPMatch,
-  onProgress?: (msg: string) => void
+  match:          OPMatch,
+  oddsPortalPath: string,
+  onProgress?:    (msg: string) => void
 ): Promise<Partial<OPMatchOdds>> {
   const odds: Partial<OPMatchOdds> = {};
 
-  if (!match.matchUrl) return odds;
+  // ── Resolve the correct match page URL ────────────────────────────────────
+  // DOM extraction from results pages gives H2H URLs (/football/h2h/.../#hash).
+  // H2H pages don't load the bookmaker odds API — we must navigate to the
+  // canonical match page: /football/{country}/{league}/{home}-{away}-{hash}/
+  let matchPageUrl = "";
 
-  const matchPageUrl = match.matchUrl.startsWith("http")
-    ? match.matchUrl : `${OP_BASE}${match.matchUrl}`;
+  if (match.matchHash && oddsPortalPath) {
+    // Preferred: construct canonical match URL from hash + league path + team slugs
+    matchPageUrl = buildMatchPageUrl(match.homeTeam, match.awayTeam, match.matchHash, oddsPortalPath);
+  }
+
+  if (!matchPageUrl && match.matchUrl) {
+    // Fallback: use stored URL (may be H2H, still worth trying)
+    matchPageUrl = match.matchUrl.startsWith("http")
+      ? match.matchUrl
+      : `${OP_BASE}${match.matchUrl}`;
+  }
+
+  if (!matchPageUrl) {
+    onProgress?.(`  ⚠ No usable URL for match`);
+    return odds;
+  }
 
   onProgress?.(`  Fetching odds: ${matchPageUrl}`);
 
-  // ── Attempt 1: plain HTTP (fast) ──────────────────────────────────────────
-  let usedBrowser = false;
+  // ── Attempt 1: plain HTTP (fast, no JS) ───────────────────────────────────
   const plainResult = await opFetch(matchPageUrl);
 
   if (plainResult.html && !plainResult.blocked) {
@@ -743,47 +796,95 @@ export async function fetchMatchOdds(
     if (match.matchHash) await fetchMarketOddsFromApi(match.matchHash, matchPageUrl, odds, onProgress);
   }
 
-  // ── Attempt 2: Playwright browser (bypasses Cloudflare) ───────────────────
-  if (Object.keys(odds).length === 0) {
-    onProgress?.(`  🌐 Plain fetch blocked — using browser for odds…`);
-    usedBrowser = true;
+  if (Object.keys(odds).length > 0) {
+    onProgress?.(`  ✓ ${Object.keys(odds).length} markets (plain fetch)`);
+    return odds;
+  }
 
-    const browserResult = await browserFetch(matchPageUrl);
-    if (browserResult.blocked) {
-      onProgress?.(`  ❌ Browser also blocked — no odds available`);
-      return odds;
-    }
-    if (!browserResult.html) {
-      onProgress?.(`  ⚠ Browser returned no content`);
-      return odds;
-    }
+  // ── Attempt 2: Playwright browser with persistent context (fast) ──────────
+  // Uses a shared browser context so Cloudflare cookies carry over from the
+  // match list fetch — no re-challenge needed after the first match.
+  onProgress?.(`  🌐 Using browser (persistent context) for odds…`);
 
-    // Parse intercepted API responses (most reliable — captures all market XHR calls)
-    if (browserResult.intercepted.length > 0) {
-      parseInterceptedOdds(browserResult.intercepted, odds);
-      onProgress?.(`  ✓ Captured ${browserResult.intercepted.length} API responses via browser`);
-    }
+  const browserResult = await fetchOddsPage(matchPageUrl);
 
-    // Fallback: extract from __NEXT_DATA__
-    if (Object.keys(odds).length === 0) {
-      const nextData = extractNextData(browserResult.html);
-      if (nextData) extractOddsFromNextData(nextData, odds);
-    }
+  if (browserResult.blocked) {
+    onProgress?.(`  ❌ Browser blocked — no odds available`);
+    return odds;
+  }
+  if (!browserResult.html) {
+    onProgress?.(`  ⚠ Browser returned no content`);
+    return odds;
+  }
 
-    // Fallback: plain HTML 1x2
-    if (!odds["1x2"] || odds["1x2"].length === 0) {
-      extract1x2FromHtml(browserResult.html, odds);
-    }
+  // Parse intercepted API responses (works when OddsPortal returns plaintext JSON)
+  if (browserResult.intercepted.length > 0) {
+    parseInterceptedOdds(browserResult.intercepted, odds);
+  }
 
-    // Try API with hash (now with valid Cloudflare cookies from browser — but still server-side)
-    if (match.matchHash && Object.keys(odds).length === 0) {
-      await fetchMarketOddsFromApi(match.matchHash, matchPageUrl, odds, onProgress);
-    }
+  // Parse DOM-rendered odds (primary method for OddsPortal 2025 encrypted SPA)
+  if (browserResult.oddsRows && browserResult.oddsRows.length > 0) {
+    parseDomOddsRows(browserResult.oddsRows, odds);
+  }
+
+  // Fallback: __NEXT_DATA__
+  if (Object.keys(odds).length === 0 && browserResult.html) {
+    const nextData = extractNextData(browserResult.html);
+    if (nextData) extractOddsFromNextData(nextData, odds);
+  }
+
+  // Fallback: HTML table parsing
+  if ((!odds["1x2"] || odds["1x2"].length === 0) && browserResult.html) {
+    extract1x2FromHtml(browserResult.html, odds);
   }
 
   const marketCount = Object.keys(odds).length;
-  onProgress?.(`  ${marketCount > 0 ? `✓ ${marketCount} markets` : "⚠ no odds"} (${usedBrowser ? "browser" : "plain fetch"})`);
+  onProgress?.(`  ${marketCount > 0 ? `✓ ${marketCount} markets` : "⚠ no odds"} (browser)`);
   return odds;
+}
+
+// ── Parse DOM-extracted odds rows ─────────────────────────────────────────────
+
+/**
+ * Interpret raw DOM odds rows (extracted via page.evaluate in fetchOddsPage).
+ *
+ * OddsPortal match pages render odds in a table where each bookmaker row has:
+ *   - 3 values → 1X2 (home / draw / away)
+ *   - 2 values → BTTS (yes / no) or DNB or DC
+ *
+ * We process all rows together; 3-value rows populate 1x2, 2-value rows populate
+ * btts/dc (heuristic: lowest average = most likely market type).
+ */
+function parseDomOddsRows(rows: OddsRow[], odds: Partial<OPMatchOdds>): void {
+  const entries1x2: BookmakerEntry[] = [];
+  const entries2val: BookmakerEntry[] = [];
+
+  for (const row of rows) {
+    const { bookmaker, values } = row;
+    if (!bookmaker || values.length < 2) continue;
+
+    // Sanity: all values must be in a plausible odds range
+    if (!values.every(v => v >= 1.01 && v <= 500)) continue;
+
+    if (values.length === 3) {
+      entries1x2.push({
+        bookmaker,
+        odds: { "1": values[0], "X": values[1], "2": values[2] },
+      });
+    } else if (values.length === 2) {
+      entries2val.push({
+        bookmaker,
+        odds: { "yes": values[0], "no": values[1] },
+      });
+    }
+  }
+
+  if (entries1x2.length > 0 && (!odds["1x2"] || odds["1x2"].length === 0)) {
+    odds["1x2"] = entries1x2;
+  }
+  if (entries2val.length > 0 && (!odds["btts"] || odds["btts"].length === 0)) {
+    odds["btts"] = entries2val;
+  }
 }
 
 function extractOddsFromNextData(data: Record<string, unknown>, odds: Partial<OPMatchOdds>) {
