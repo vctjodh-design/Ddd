@@ -86,36 +86,37 @@ async function runJob(jobId: string, params: StartJobParams) {
       });
       log(`[${processed}/${matches.length}] ${label}`);
 
-      // Lookup team IDs via StatsHub search
+      // Lookup team IDs via StatsHub search (optional — missing IDs don't block odds)
       const [homeId, awayId] = await Promise.all([
         findTeamId(match.homeTeam),
         findTeamId(match.awayTeam),
       ]);
 
       if (!homeId || !awayId) {
-        log(`  ↳ Skip: team IDs not found (home=${homeId}, away=${awayId})`);
-        skipped++;
-        continue;
+        log(`  ↳ StatsHub: team IDs not found (home=${homeId}, away=${awayId}) — continuing without stats`);
       }
 
-      // Fetch team history (need ≥ MIN_MATCH_HISTORY matches)
+      // Fetch team history if IDs are available (optional enrichment)
       const matchTs = match.date ? Math.floor(new Date(match.date).getTime() / 1000) : undefined;
-      const [homeStats, awayStats] = await Promise.all([
-        fetchStatsHubTeamHistory(homeId, matchTs),
-        fetchStatsHubTeamHistory(awayId, matchTs),
-      ]);
+      const [homeStats, awayStats] = homeId && awayId
+        ? await Promise.all([
+            fetchStatsHubTeamHistory(homeId, matchTs),
+            fetchStatsHubTeamHistory(awayId, matchTs),
+          ])
+        : [null, null];
 
-      // Check minimum match history requirement
       const homeMatches = homeStats?.statHistory?.[0]?.matches?.length ?? 0;
       const awayMatches = awayStats?.statHistory?.[0]?.matches?.length ?? 0;
 
-      if (homeMatches < MIN_MATCH_HISTORY || awayMatches < MIN_MATCH_HISTORY) {
-        log(`  ↳ Skip: insufficient history (home=${homeMatches}, away=${awayMatches}, min=${MIN_MATCH_HISTORY})`);
-        skipped++;
-        continue;
+      if (homeId && awayId) {
+        if (homeMatches < MIN_MATCH_HISTORY || awayMatches < MIN_MATCH_HISTORY) {
+          log(`  ↳ StatsHub: insufficient history (home=${homeMatches}, away=${awayMatches}, min=${MIN_MATCH_HISTORY}) — continuing without stats`);
+        } else {
+          log(`  ↳ StatsHub OK (home=${homeMatches}, away=${awayMatches})`);
+        }
       }
 
-      log(`  ↳ Stats OK (home=${homeMatches}, away=${awayMatches}). Fetching odds…`);
+      log(`  ↳ Fetching odds…`);
 
       // Fetch bookmaker odds from OddsPortal match page
       let matchOdds: Awaited<ReturnType<typeof fetchMatchOdds>> = {};
