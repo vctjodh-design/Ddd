@@ -52,7 +52,7 @@ const USER_AGENT =
   "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
 const EXTRA_HEADERS = {
-  "Accept-Language":    "en-US,en;q=0.9",
+  "Accept-Language":    "en-GB,en;q=0.9",
   "sec-ch-ua":          '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
   "sec-ch-ua-mobile":   "?0",
   "sec-ch-ua-platform": '"Windows"',
@@ -106,10 +106,33 @@ async function getOddsContext(): Promise<BrowserContext> {
     _oddsContext = await browser.newContext({
       userAgent:  USER_AGENT,
       viewport:   { width: 1920, height: 1080 },
-      locale:     "en-US",
-      timezoneId: "America/New_York",
+      locale:     "en-GB",
+      timezoneId: "Europe/London",
       extraHTTPHeaders: EXTRA_HEADERS,
     });
+
+    // Switch OddsPortal to Decimal format for this session.
+    // OddsPortal IP-detects Replit as US and serves money line odds by default.
+    // The format preference is stored server-side in the Laravel session cookie.
+    // Approach: load oddsportal.com first (creates session), then call
+    // ajax-setcookie/OddsFormat/1 via fetch() from within the page (updates session).
+    // All subsequent navigations in this context share the same session cookie.
+    try {
+      const initPage = await _oddsContext.newPage();
+      // Step 1: establish a session by loading the home page
+      await initPage.goto("https://www.oddsportal.com/", {
+        waitUntil: "commit", timeout: 20_000,
+      }).catch(() => {});
+      await new Promise(r => setTimeout(r, 2_000));
+      // Step 2: update session to decimal format via the AJAX endpoint
+      await initPage.evaluate(async () => {
+        await fetch("/ajax-setcookie/OddsFormat/1/", { credentials: "include" }).catch(() => {});
+      }).catch(() => {});
+      await initPage.close();
+      console.log("[BrowserScraper] Decimal odds format set in session");
+    } catch (e) {
+      console.warn("[BrowserScraper] Failed to set decimal format:", e);
+    }
   }
   return _oddsContext;
 }
@@ -171,8 +194,8 @@ export async function browserFetch(
     context = await browser.newContext({
       userAgent:  USER_AGENT,
       viewport:   { width: 1920, height: 1080 },
-      locale:     "en-US",
-      timezoneId: "America/New_York",
+      locale:     "en-GB",
+      timezoneId: "Europe/London",
       extraHTTPHeaders: EXTRA_HEADERS,
     });
     context.on("response", async (resp) => {
@@ -304,9 +327,15 @@ export async function fetchOddsPage(
       try {
         if (!resp.url().includes(interceptHost)) return;
         const ct = resp.headers()["content-type"] ?? "";
-        if (!ct.includes("json")) return;
-        const json = await resp.json().catch(() => null);
-        if (json !== null) intercepted.push({ url: resp.url(), json });
+        const respUrl = resp.url();
+        // Capture JSON responses AND .dat files (OddsPortal match-event API)
+        const isJsonCt = ct.includes("json");
+        const isDat    = respUrl.includes("match-event") || respUrl.endsWith(".dat");
+        if (!isJsonCt && !isDat) return;
+        const body = await resp.text().catch(() => null);
+        if (!body) return;
+        const json = JSON.parse(body);
+        intercepted.push({ url: respUrl, json });
       } catch {}
     });
 
@@ -318,151 +347,94 @@ export async function fetchOddsPage(
       return { ...empty, blocked: true };
     }
 
-    // Wait for the odds table to appear
-    await new Promise(r => setTimeout(r, 2_000));
+    // Wait for Vue to render odds
+    await new Promise(r => setTimeout(r, 3_000));
 
     const html = await page.content().catch(() => null);
     if (!html || html.length < 500) return { ...empty, html: null };
 
-    // ── Step 1: Remove classification headers ─────────────────────────────────
-    // These are date/round separators between match rows on the results listing.
-    // Removing them gives a cleaner innerText for odds RegEx extraction.
-    await page.evaluate(() => {
-      const hdrs = Array.from(document.getElementsByClassName("flex items-center justify-start"));
-      for (let i = hdrs.length - 1; i >= 0; i--) {
-        const next = hdrs[i].nextSibling;
-        if (next && next.parentElement) next.parentElement.removeChild(next);
-        if (hdrs[i].parentElement) hdrs[i].parentElement.removeChild(hdrs[i]);
-      }
-    }).catch(() => {});
-
-    // ── Step 2: Expand all market sections ────────────────────────────────────
-    // OddsPortal shows only the 1X2 market by default.
-    // Click every "flex w-full items-center" header to expand O/U, AH, BTTS, DC, etc.
-    const expandedSections = await page.evaluate((): string[] => {
-      const expanded: string[] = [];
-      const sections = Array.from(document.getElementsByClassName("flex w-full items-center"));
-      for (const sec of sections) {
-        const el = sec as HTMLElement;
-        const txt = el.innerText?.trim() ?? "";
-        if (txt.length > 0 && txt.length < 80) {
-          el.click();
-          expanded.push(txt.slice(0, 40));
+    // ── Step 0: Switch to Decimal odds format if page shows Money Line ─────────
+    // OddsPortal geo-detects the Replit IP as US and defaults to Money Line odds.
+    // The context init step (ajax-setcookie) should have set decimal; this is a
+    // per-page UI fallback in case it didn't persist across page navigations.
+    try {
+      const fmtBtn = page.locator("button").filter({ hasText: "Money Line Odds" }).first();
+      if (await fmtBtn.count() > 0) {
+        console.log("[BrowserScraper] Money Line format detected — switching to Decimal…");
+        await fmtBtn.click({ force: true });
+        await new Promise(r => setTimeout(r, 600));
+        const decOpt = page.locator("li").filter({ hasText: /^Decimal Odds/ }).first();
+        if (await decOpt.count() > 0) {
+          await decOpt.click({ force: true });
+          await new Promise(r => setTimeout(r, 2_500));
+          console.log("[BrowserScraper] Switched to Decimal odds.");
         }
       }
-      return expanded;
-    }).catch(() => [] as string[]);
+    } catch { /* non-fatal */ }
 
-    if (expandedSections.length > 0) {
-      console.log(`[BrowserScraper] Expanded sections: ${expandedSections.join(", ")}`);
-      // Wait for the expanded content to render
-      await new Promise(r => setTimeout(r, 2_000));
-      await page.waitForLoadState("networkidle", { timeout: 6_000 }).catch(() => {});
+    // ── Step 1: Capture 1X2 page text (default market shown on load) ──────────
+    const text1x2 = await page.evaluate(() => document.body.innerText).catch(() => "");
+
+    // ── Step 2: Click each market tab to load odds for other markets ──────────
+    // OddsPortal match pages show ONE market at a time.  Market tabs appear as
+    // clickable elements with text like "Over/Under", "Both Teams to Score", etc.
+    // We find them by text content, click each, wait for Vue to re-render,
+    // then capture the updated body text.
+    const MARKET_TABS = [
+      "Over/Under",
+      "Both Teams to Score",
+      "Double Chance",
+      "Draw No Bet",
+      "Asian Handicap",
+      "European Handicap",
+      "Correct Score",
+      "Half Time/Full Time",
+      "Odd or Even",
+    ] as const;
+
+    const tabTexts: Record<string, string> = { "1X2": text1x2 };
+
+    for (const tabName of MARKET_TABS) {
+      try {
+        const clicked = await page.evaluate((txt: string): boolean => {
+          // Try <a>, <button>, <li>, <div>, <span> elements with exact text match
+          for (const sel of ["a", "button", "li", "div", "span"]) {
+            for (const el of Array.from(document.querySelectorAll(sel))) {
+              const t = (el as HTMLElement).innerText?.trim() ?? el.textContent?.trim() ?? "";
+              if (t === txt || t.startsWith(txt + "\n") || t.startsWith(txt + " ")) {
+                (el as HTMLElement).click();
+                return true;
+              }
+            }
+          }
+          return false;
+        }, tabName);
+
+        if (clicked) {
+          await new Promise(r => setTimeout(r, 2_000));
+          await page.waitForLoadState("networkidle", { timeout: 6_000 }).catch(() => {});
+          tabTexts[tabName] = await page.evaluate(() => document.body.innerText).catch(() => "");
+        }
+      } catch { /* ignore per-tab errors */ }
     }
 
-    // ── Step 3: Capture opening odds via mouseenter ───────────────────────────
-    // Bookmaker rows are "flex" elements where innerText starts with the bookmaker
-    // name and ends with "%" or "-".
-    // Children: [0]=name cell, [1]=home odds, [2]=draw odds, [3]=away odds.
-    // Hovering over children[hda].children[0] opens a tooltip with opening odds.
-    //
-    // We iterate all bookmaker rows and all 3 positions (hda 1,2,3) to capture
-    // opening odds for every bookmaker automatically.
+    // Combine all tab texts: put them in order so the parser can find each section
+    // Each tab text already contains the full page text for that market.
+    // We'll pass them concatenated with section markers so parseOddsFromPageText
+    // can find each market's section header.
+    const combinedText = Object.entries(tabTexts)
+      .map(([tab, txt]) => `\n${tab}\n${txt}`)
+      .join("\n\n---MARKET---\n\n");
+
+    console.log(`[BrowserScraper] Tab texts captured: ${Object.keys(tabTexts).join(", ")} (${combinedText.length} chars)`);
+
+
+    // pageText = combined text from all market tabs (1X2 default + each tab clicked)
+    const pageText = combinedText;
     const popupTexts: Record<string, string> = {};
+    const oddsRows: OddsRow[] = [];
 
-    const bookmakerRows = await page.evaluate((): string[] => {
-      const names: string[] = [];
-      const rows = Array.from(document.getElementsByClassName("flex"));
-      for (const el of rows) {
-        const h = el as HTMLElement;
-        const txt = h.innerText?.trim() ?? "";
-        if (txt && (txt.endsWith("%") || txt.endsWith("-")) && h.children.length >= 4) {
-          // First word-like segment = bookmaker name
-          const firstLine = txt.split("\n")[0].trim();
-          if (firstLine.length > 0 && firstLine.length < 50 && !names.includes(firstLine)) {
-            names.push(firstLine);
-          }
-        }
-      }
-      return names;
-    }).catch(() => [] as string[]);
-
-    for (const bookmaker of bookmakerRows.slice(0, 30)) { // cap at 30 bookmakers for speed
-      for (const hda of [1, 2, 3]) {
-        try {
-          // Trigger mouseenter to open popup
-          await page.evaluate(({ bm, hda }: { bm: string; hda: number }) => {
-            const rows = Array.from(document.getElementsByClassName("flex"));
-            for (let i = rows.length - 1; i >= 0; i--) {
-              const el = rows[i] as HTMLElement;
-              const txt = el.innerText?.trim() ?? "";
-              if (txt.startsWith(bm) && (txt.endsWith("%") || txt.endsWith("-")) && el.children.length > hda) {
-                const cell = el.children[hda]?.children[0];
-                if (cell) cell.dispatchEvent(new Event("mouseenter", { bubbles: true }));
-              }
-            }
-          }, { bm: bookmaker, hda });
-
-          await new Promise(r => setTimeout(r, 350));
-
-          // Read popup text
-          const popup = await page.$("[class*='tooltip'], [class*='Tooltip'], [class*='popup'], [class*='Popup'], [class*='overlay']");
-          if (popup) {
-            const txt = await popup.innerText().catch(() => "");
-            if (txt && txt.includes("Opening odds")) {
-              popupTexts[`${bookmaker}|${hda}`] = txt;
-            }
-          }
-
-          // Close popup (mouseleave)
-          await page.evaluate(({ bm, hda }: { bm: string; hda: number }) => {
-            const rows = Array.from(document.getElementsByClassName("flex"));
-            for (let i = rows.length - 1; i >= 0; i--) {
-              const el = rows[i] as HTMLElement;
-              const txt = el.innerText?.trim() ?? "";
-              if (txt.startsWith(bm) && (txt.endsWith("%") || txt.endsWith("-")) && el.children.length > hda) {
-                const cell = el.children[hda]?.children[0];
-                if (cell) cell.dispatchEvent(new Event("mouseleave", { bubbles: true }));
-              }
-            }
-          }, { bm: bookmaker, hda });
-
-          await new Promise(r => setTimeout(r, 100));
-        } catch { /* ignore per-cell errors */ }
-      }
-    }
-
-    // ── Step 4: Get full page text for RegEx extraction ───────────────────────
-    const pageText = await page.evaluate(() => document.body.innerText).catch(() => "");
-
-    // ── Step 5: DOM-walk fallback odds extraction ─────────────────────────────
-    const oddsRows: OddsRow[] = await page.evaluate((): OddsRow[] => {
-      const rows: OddsRow[] = [];
-      function isOdds(t: string): boolean {
-        const n = parseFloat(t.trim());
-        return !isNaN(n) && n >= 1.01 && n <= 999 && /^\d+(\.\d{1,3})?$/.test(t.trim());
-      }
-      const allEls = Array.from(document.querySelectorAll("div,tr,li"));
-      const seen = new WeakSet<Element>();
-      for (const el of allEls) {
-        if (seen.has(el)) continue;
-        const kids = Array.from(el.children);
-        const oddsKids = kids.filter(c => isOdds(c.textContent ?? ""));
-        if (oddsKids.length >= 2 && oddsKids.length <= 15 && kids.length >= 3) {
-          seen.add(el);
-          const values = oddsKids.map(c => parseFloat(c.textContent?.trim() ?? "0"));
-          const nameEl =
-            el.querySelector("[class*='ookmaker' i] a, [class*='ookmaker' i]") ??
-            el.querySelector("p,span,a");
-          const bookmaker = (nameEl?.textContent ?? el.children[0]?.textContent ?? "").trim().slice(0, 60);
-          if (bookmaker && values.every(v => v > 1)) rows.push({ bookmaker, values });
-        }
-      }
-      return rows;
-    }).catch(() => []);
-
-    const pmCount = Object.keys(popupTexts).length;
-    console.log(`[BrowserScraper] Odds: ${bookmakerRows.length} bookmakers, ${pmCount} popups, ${pageText.length} chars text`);
+    console.log(`[BrowserScraper] Odds page ready: ${intercepted.length} API responses, ${pageText.length} chars text`);
 
     return { html, intercepted, blocked: false, domLinks: [], pageText, oddsRows, popupTexts };
 

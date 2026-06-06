@@ -422,10 +422,17 @@ function parseInterceptedOdds(
     // Determine which market this URL belongs to
     let market: keyof OPMatchOdds | null = null;
 
+    // Pattern: /match-event/{sportId}-{X}-{hash}-{betTypeId}-{scopeId}-{cacheHash}.dat
+    // e.g. /match-event/1-1-Ekq9W28q-1-2-a262a67e56d628c99875b8cf09a57359.dat
+    const matchEvtMatch = url.match(/\/match-event\/\d+-\d+-[^-]+-(\d+)-(\d+)-[^.]+\.dat/);
+    if (matchEvtMatch) {
+      market = betTypeMap[Number(matchEvtMatch[1])] ?? null;
+    }
+
     // Pattern: /api/v1/event-row/{hash}/{betTypeId}/{scopeId}/
-    const betTypeMatch = url.match(/\/event-row\/[^/]+\/(\d+)\//);
-    if (betTypeMatch) {
-      market = betTypeMap[Number(betTypeMatch[1])] ?? null;
+    if (!market) {
+      const betTypeMatch = url.match(/\/event-row\/[^/]+\/(\d+)\//);
+      if (betTypeMatch) market = betTypeMap[Number(betTypeMatch[1])] ?? null;
     }
     // Pattern: /api/v1/event/{hash}/1x2/ etc.
     if (!market) {
@@ -777,14 +784,16 @@ export async function fetchMatchOdds(
 
   if (match.matchHash && oddsPortalPath) {
     matchPageUrl = buildMatchPageUrl(match.homeTeam, match.awayTeam, match.matchHash, oddsPortalPath);
+    onProgress?.(`  URL resolved: canonical (hash=${match.matchHash}) → ${matchPageUrl}`);
   }
   if (!matchPageUrl && match.matchUrl) {
     matchPageUrl = match.matchUrl.startsWith("http")
       ? match.matchUrl
       : `${OP_BASE}${match.matchUrl}`;
+    onProgress?.(`  URL resolved: fallback matchUrl → ${matchPageUrl}`);
   }
   if (!matchPageUrl) {
-    onProgress?.(`  ⚠ No usable URL for match`);
+    onProgress?.(`  ⚠ No usable URL for match (hash=${match.matchHash ?? "none"}, matchUrl=${match.matchUrl ?? "none"})`);
     return odds;
   }
 
@@ -914,8 +923,13 @@ function parseOddsFromPageText(
 ): void {
   if (!text) return;
 
-  // Normalise line endings
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  // Normalise line endings and COLLAPSE multiple consecutive blank lines into one.
+  // OddsPortal's Vue SPA (flex layout) renders empty lines between every element;
+  // the parser breaks on the first empty line, so collapsing fixes extraction.
+  const normalized = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\n{2,}/g, "\n");
 
   // ── Split into market sections ─────────────────────────────────────────────
   // Find the character offset of each market section header in the text.
@@ -995,32 +1009,40 @@ function parseBookmakerSection(sectionText: string, market: keyof OPMatchOdds): 
   const entries: BookmakerEntry[] = [];
   const lines = sectionText.split("\n");
 
+  // Lines to always skip (promotional / UI chrome that appear between bookmaker names
+  // and their odds values — e.g. OddsPortal US shows "CLAIM BONUS" after bookmaker name)
+  const SKIP_LINE = /^(CLAIM\s*BONUS|CLAIM|VISIT\s*BOOKMAKER|GET\s*BONUS|SIGN\s*UP|JOIN\s*NOW|MY\s*COUPON|REGISTER|LOGIN|BET\s*NOW|FREE\s*BET)$/i;
+
   let i = 0;
   while (i < lines.length) {
     const line = lines[i].trim();
 
     // A bookmaker name line: starts with a capital letter, no leading digits,
-    // length 2–50, does not look like a score or percentage.
+    // length 2–60, does not look like a score or percentage.
     if (
       line.length >= 2 &&
-      line.length <= 50 &&
+      line.length <= 60 &&
       /^[A-Z]/.test(line) &&
       !/^\d/.test(line) &&
       !/^[\d.]+$/.test(line) &&
       !line.endsWith("%") &&
       !line.includes(":") &&
-      !line.match(/^\d+[–\-]\d+$/)
+      !line.match(/^\d+[–\-]\d+$/) &&
+      !SKIP_LINE.test(line)
     ) {
-      // Collect the next up to 5 lines that look like numeric values
+      // Collect the next up to 6 lines that look like numeric values,
+      // skipping promotional lines ("CLAIM BONUS", "VISIT BOOKMAKER", etc.)
       const vals: string[] = [];
       let j = i + 1;
-      while (j < lines.length && vals.length < 5) {
+      while (j < lines.length && vals.length < 6) {
         const vl = lines[j].trim();
+        // Skip promotional lines without breaking
+        if (SKIP_LINE.test(vl)) { j++; continue; }
         // A value line: decimal number, optionally prefixed with + or -
         if (/^[+-]?\d+\.?\d*$/.test(vl)) {
           vals.push(vl);
           j++;
-        } else if (vl === "" || vl.endsWith("%") || vl.length > 10) {
+        } else if (vl === "" || vl.endsWith("%") || vl.length > 20) {
           break;
         } else {
           j++;
