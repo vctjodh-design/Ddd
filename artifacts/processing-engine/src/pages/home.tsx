@@ -204,6 +204,8 @@ interface UploadModalProps {
   onClose: () => void;
 }
 
+const CURRENT_SEASON_VALUE = 9999; // sentinel — triggers no-year-suffix URL
+
 function BulkUploadModal({ leagueName, countryName, suggestedPath, onClose }: UploadModalProps) {
   const currentYear = new Date().getFullYear();
   const years = Array.from({ length: 8 }, (_, i) => currentYear - i);
@@ -241,10 +243,11 @@ function BulkUploadModal({ leagueName, countryName, suggestedPath, onClose }: Up
     setError(null);
     setStarting(true);
     try {
+      const effectiveYear = year === CURRENT_SEASON_VALUE ? currentYear : year;
       const r = await fetch("/api/bulk/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ leagueName, countryName, oddsPortalPath: path.trim(), year }),
+        body: JSON.stringify({ leagueName, countryName, oddsPortalPath: path.trim(), year: effectiveYear }),
       });
       if (!r.ok) {
         let errMsg = `HTTP ${r.status}`;
@@ -311,20 +314,38 @@ function BulkUploadModal({ leagueName, countryName, suggestedPath, onClose }: Up
                   placeholder="e.g. england/premier-league"
                   className="w-full bg-card/30 border border-border text-foreground text-xs font-mono px-3 py-2 placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/60 transition-all"
                 />
-                <div className="text-[10px] text-muted-foreground/50 font-mono mt-1 space-y-0.5">
-                  <div>oddsportal.com/football/<span className="text-primary/60">{path || "country/league"}</span>-{year}/results/</div>
-                  <div className="text-muted-foreground/30">↳ fallback: …<span className="text-primary/40">{path.split("/")[1] || "league"}</span>-{year - 1}-{year}/results/</div>
-                </div>
+                {(() => {
+                  const slug = path.split("/")[1] || "league";
+                  const isCurrentSeason = year === CURRENT_SEASON_VALUE;
+                  return (
+                    <div className="text-[10px] text-muted-foreground/50 font-mono mt-1 space-y-0.5">
+                      {isCurrentSeason ? (
+                        <div>oddsportal.com/football/<span className="text-primary/60">{path || "country/league"}</span>/results/
+                          <span className="ml-1 text-yellow-500/60">(no year — latest season)</span>
+                        </div>
+                      ) : (
+                        <>
+                          <div>oddsportal.com/football/<span className="text-primary/60">{path || "country/league"}</span>-{year}/results/</div>
+                          <div className="text-muted-foreground/30">↳ fallback: …<span className="text-primary/40">{slug}</span>-{year - 1}-{year}/results/</div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Year */}
               <div>
-                <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1.5">Year</label>
+                <label className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground block mb-1.5">
+                  Year
+                  <span className="ml-1 text-muted-foreground/40">(use Current Season for tournaments / ongoing leagues)</span>
+                </label>
                 <select
                   value={year}
                   onChange={e => setYear(parseInt(e.target.value))}
                   className="w-full bg-card/30 border border-border text-foreground text-xs font-mono px-3 py-2 focus:outline-none focus:border-primary/60 transition-all"
                 >
+                  <option value={CURRENT_SEASON_VALUE}>Current Season (no year suffix)</option>
                   {years.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
               </div>
