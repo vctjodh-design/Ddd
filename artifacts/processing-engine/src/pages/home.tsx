@@ -311,8 +311,9 @@ function BulkUploadModal({ leagueName, countryName, suggestedPath, onClose }: Up
                   placeholder="e.g. england/premier-league"
                   className="w-full bg-card/30 border border-border text-foreground text-xs font-mono px-3 py-2 placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/60 transition-all"
                 />
-                <div className="text-[10px] text-muted-foreground/50 font-mono mt-1">
-                  URL pattern: oddsportal.com/football/<span className="text-primary/60">{path || "country/league"}</span>-{year}/results/
+                <div className="text-[10px] text-muted-foreground/50 font-mono mt-1 space-y-0.5">
+                  <div>oddsportal.com/football/<span className="text-primary/60">{path || "country/league"}</span>-{year}/results/</div>
+                  <div className="text-muted-foreground/30">↳ fallback: …<span className="text-primary/40">{path.split("/")[1] || "league"}</span>-{year - 1}-{year}/results/</div>
                 </div>
               </div>
 

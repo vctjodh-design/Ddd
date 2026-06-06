@@ -178,19 +178,18 @@ function buildResultsUrl(oddsPortalPath: string, year: number): string {
   const currentYear = new Date().getFullYear();
 
   // OddsPortal URL patterns:
-  //   Current season (currentYear/currentYear+1): no year suffix → /results/
-  //   Previous seasons: {league}-{startYear}-{endYear}/results/
-  //   where startYear = year-1, endYear = year (e.g. year=2025 → 2024-2025)
+  //   Current season (currentYear): no year suffix → /results/
+  //   Previous seasons (calendar-year leagues): {league}-{year}/results/
+  //   Previous seasons (European split-season): {league}-{year-1}-{year}/results/
   //
-  // Note: some older leagues used {league}-{year}/results/ (single year) but
-  // the standard modern format is always the double-year form.
+  // Single-year format is the primary format (most leagues globally use calendar years).
   let slugWithYear: string;
   if (year >= currentYear) {
     // Current or future season — base URL (no suffix)
     slugWithYear = league;
   } else {
-    // Previous season: use start-end year format
-    slugWithYear = `${league}-${year - 1}-${year}`;
+    // Previous season: primary format is single-year (e.g. -2025)
+    slugWithYear = `${league}-${year}`;
   }
   return `${OP_BASE}/football/${country}/${slugWithYear}/results/`;
 }
@@ -207,9 +206,14 @@ function buildResultsUrlCandidates(oddsPortalPath: string, year: number): string
     return [`${base}/${league}/results/`];
   }
   return [
-    `${base}/${league}-${year - 1}-${year}/results/`,  // 2024-2025 format (standard)
-    `${base}/${league}-${year}/results/`,               // 2025 format (some leagues)
-    `${base}/${league}/results/`,                       // fallback: base URL
+    // Single-year format first — used by South American, Asian, and most calendar-year leagues
+    // e.g. /brazil/brasileiro-serie-b-2025/results/
+    `${base}/${league}-${year}/results/`,
+    // Double-year format — used by European split-season leagues (Aug–May)
+    // e.g. /england/premier-league-2024-2025/results/
+    `${base}/${league}-${year - 1}-${year}/results/`,
+    // Fallback: no year suffix (may redirect to current season)
+    `${base}/${league}/results/`,
   ];
 }
 
