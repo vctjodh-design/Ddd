@@ -530,8 +530,15 @@ function parseDomMatchLinks(domLinks: DomLink[], fallbackYear: number): OPMatch[
 
     // Home team = text before score, strip trailing score digits
     const homeTeam = beforeScore.replace(/\d+$/, "").trim();
-    // Away team = text after score, strip trailing score digits
-    const awayTeam = afterScore.replace(/\d+$/, "").trim();
+    // Away team = text after score.
+    // Two possible formats:
+    //  a) Canonical <a> wrapping whole row: "TeamName{awayScore}" — strip trailing digit
+    //  b) H2H parent container text: "TeamName{awayScore}{odds...}" — strip from first digit
+    // Strategy: strip everything from the first digit onwards, then fall back to
+    // just stripping the trailing digit if the result would be empty.
+    const awayNoDigit = afterScore.replace(/\d[\s\S]*$/, "").replace(/[-\s]+$/, "").trim();
+    const awayTrailingDigit = afterScore.replace(/\d+$/, "").trim();
+    const awayTeam = awayNoDigit.length > 1 ? awayNoDigit : awayTrailingDigit;
 
     if (!homeTeam || !awayTeam) continue;
 

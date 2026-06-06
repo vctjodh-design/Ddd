@@ -250,7 +250,24 @@ export async function browserFetch(
             if (href.includes("/football/") && text.length > 0) {
               const parts: string[] = href.split("/").filter(Boolean);
               if (parts.length >= 3 && !href.includes("/?") && !href.endsWith("/football/")) {
-                items.push({ href, text, date: currentDate });
+                // H2H links (e.g. /football/h2h/team1-HASH/team2-HASH/#matchHash) only
+                // contain status text like "FinishedFIN" inside the <a>.  Team names
+                // and scores are in sibling elements outside the link.  Walk up the
+                // DOM to find the nearest ancestor whose innerText contains exactly
+                // one en-dash score separator — that's the match-row container.
+                let captureText = text;
+                if (href.includes("/h2h/") && !text.includes("\u2013")) {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  let el: any = node.parentElement;
+                  for (let d = 0; d < 8 && el && el.tagName !== "BODY"; d++) {
+                    const t2: string = (el.innerText ?? el.textContent ?? "").replace(/\s+/g, " ").trim();
+                    const dashes: number = (t2.match(/\u2013/g) ?? []).length;
+                    if (dashes === 1) { captureText = t2; break; }
+                    if (dashes > 2) break; // container has multiple matches — stop
+                    el = el.parentElement;
+                  }
+                }
+                items.push({ href, text: captureText, date: currentDate });
                 return;
               }
             }
