@@ -317,16 +317,25 @@ function BulkUploadModal({ leagueName, countryName, suggestedPath, onClose }: Up
                 {(() => {
                   const slug = path.split("/")[1] || "league";
                   const isCurrentSeason = year === CURRENT_SEASON_VALUE;
+                  const yr = currentYear;
+                  // Warn if the slug looks like it has unstripped accents or spaces
+                  const slugWarning = /[^a-z0-9\-\/]/.test(path) && path.length > 0;
                   return (
-                    <div className="text-[10px] text-muted-foreground/50 font-mono mt-1 space-y-0.5">
+                    <div className="text-[10px] font-mono mt-1 space-y-0.5">
+                      {slugWarning && (
+                        <div className="text-yellow-400/80">⚠ Slug must be lowercase a-z, 0-9, hyphens only (copy from OddsPortal URL bar)</div>
+                      )}
                       {isCurrentSeason ? (
-                        <div>oddsportal.com/football/<span className="text-primary/60">{path || "country/league"}</span>/results/
-                          <span className="ml-1 text-yellow-500/60">(no year — latest season)</span>
-                        </div>
+                        <>
+                          <div className="text-muted-foreground/50">oddsportal.com/football/<span className="text-primary/60">{path || "country/league"}</span>/results/ <span className="text-yellow-500/60">(tried first)</span></div>
+                          <div className="text-muted-foreground/30">↳ fallback: …<span className="text-primary/40">{slug}</span>-{yr}/results/</div>
+                          <div className="text-muted-foreground/30">↳ fallback: …<span className="text-primary/40">{slug}</span>-{yr - 1}-{yr}/results/</div>
+                        </>
                       ) : (
                         <>
-                          <div>oddsportal.com/football/<span className="text-primary/60">{path || "country/league"}</span>-{year}/results/</div>
+                          <div className="text-muted-foreground/50">oddsportal.com/football/<span className="text-primary/60">{path || "country/league"}</span>-{year}/results/</div>
                           <div className="text-muted-foreground/30">↳ fallback: …<span className="text-primary/40">{slug}</span>-{year - 1}-{year}/results/</div>
+                          <div className="text-muted-foreground/30">↳ fallback: …<span className="text-primary/40">{slug}</span>/results/</div>
                         </>
                       )}
                     </div>

@@ -203,7 +203,13 @@ function buildResultsUrlCandidates(oddsPortalPath: string, year: number): string
   const currentYear = new Date().getFullYear();
 
   if (year >= currentYear) {
-    return [`${base}/${league}/results/`];
+    // Current season: try no-suffix first (OddsPortal's "latest" URL), then
+    // explicit current-year suffix, then split-season format as fallbacks.
+    return [
+      `${base}/${league}/results/`,
+      `${base}/${league}-${currentYear}/results/`,
+      `${base}/${league}-${currentYear - 1}-${currentYear}/results/`,
+    ];
   }
   return [
     // Single-year format first — used by South American, Asian, and most calendar-year leagues
