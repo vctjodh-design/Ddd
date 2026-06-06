@@ -5,14 +5,23 @@ description: How to make better-sqlite3 work in Replit after pnpm install
 
 `pnpm approve-builds` is interactive and fails in non-TTY environments. `prebuild-install` finds no prebuilt binary for Node.js v20.20.0 on linux-x64. The native addon must be compiled from source.
 
-**Fix:**
+**Full fix sequence:**
 ```bash
+# 1. Install packages without running scripts (prevents better-sqlite3 from hanging)
+pnpm install --ignore-scripts
+
+# 2. Install node-gyp globally (not on PATH by default)
+npm install -g node-gyp
+
+# 3. Compile better-sqlite3 from source (~60s)
 cd node_modules/.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3
-npm exec node-gyp -- rebuild
+node-gyp rebuild
+
+# 4. Restart api-server workflow
 ```
 
-This takes ~60s and produces `build/Release/better_sqlite3.node`. Then rebuild the api-server bundle and restart its workflow.
+This produces `build/Release/better_sqlite3.node`.
 
-**Why:** No prebuilt binary exists for the Replit Node.js v20.20.0 runtime. `node-gyp` is not on PATH but works via `npm exec node-gyp`. Build tools (python3, make, gcc) are available in the Nix environment.
+**Why:** No prebuilt binary exists for the Replit Node.js v20.20.0 (node-v115) runtime. `pnpm install` without `--ignore-scripts` hangs indefinitely on the better-sqlite3 install script. Build tools (python3, make, gcc) are available in the Nix environment.
 
-**How to apply:** Any time better-sqlite3 is freshly installed or the container is reset, run the node-gyp rebuild step before starting the api-server. The binary is NOT preserved across pnpm reinstalls.
+**How to apply:** Any time better-sqlite3 is freshly installed or the container is reset, run the full sequence before starting the api-server. The binary is NOT preserved across pnpm reinstalls.
