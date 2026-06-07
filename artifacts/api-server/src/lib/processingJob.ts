@@ -406,11 +406,6 @@ async function runJob(jobId: string, params: StartProcessingParams) {
         po_btts_json:  toJson(markets?.btts),
         po_dc_json:    toJson(markets?.dc),
         po_dnb_json:   toJson(markets?.dnb),
-        po_cs_json:    null,
-        po_eh_json:    null,
-        po_htft_json:  null,
-        po_oe_json:    null,
-        po_wtbh_json:  null,
       });
 
       stored++;

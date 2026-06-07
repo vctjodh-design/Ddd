@@ -65,11 +65,7 @@ function initSchema(db: Database.Database) {
       odds_ah_json    TEXT,
       odds_btts_json  TEXT,
       odds_dc_json    TEXT,
-      odds_eh_json    TEXT,
       odds_dnb_json   TEXT,
-      odds_cs_json    TEXT,
-      odds_htft_json  TEXT,
-      odds_oe_json    TEXT,
       created_at      INTEGER NOT NULL,
       FOREIGN KEY (job_id) REFERENCES bulk_jobs(id)
     );
@@ -119,11 +115,6 @@ function initSchema(db: Database.Database) {
       po_btts_json             TEXT,
       po_dc_json               TEXT,
       po_dnb_json              TEXT,
-      po_cs_json               TEXT,
-      po_eh_json               TEXT,
-      po_htft_json             TEXT,
-      po_oe_json               TEXT,
-      po_wtbh_json             TEXT,
       created_at               INTEGER NOT NULL,
       FOREIGN KEY (job_id) REFERENCES processing_jobs(id)
     );
@@ -147,6 +138,17 @@ function initSchema(db: Database.Database) {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_pm_unique
         ON processing_matches(date, home_team, away_team);
     `);
+  }
+
+  // Drop obsolete market columns from existing databases (migration)
+  const pmCols = (db.prepare("PRAGMA table_info(processing_matches)").all() as { name: string }[]).map(c => c.name);
+  for (const col of ["po_cs_json", "po_eh_json", "po_htft_json", "po_oe_json", "po_wtbh_json"]) {
+    if (pmCols.includes(col)) db.exec(`ALTER TABLE processing_matches DROP COLUMN ${col}`);
+  }
+
+  const smCols = (db.prepare("PRAGMA table_info(stored_matches)").all() as { name: string }[]).map(c => c.name);
+  for (const col of ["odds_eh_json", "odds_cs_json", "odds_htft_json", "odds_oe_json"]) {
+    if (smCols.includes(col)) db.exec(`ALTER TABLE stored_matches DROP COLUMN ${col}`);
   }
 
   // Same dedup + unique index for stored_matches
@@ -258,11 +260,7 @@ export interface StoredMatch {
   odds_ah_json: string | null;
   odds_btts_json: string | null;
   odds_dc_json: string | null;
-  odds_eh_json: string | null;
   odds_dnb_json: string | null;
-  odds_cs_json: string | null;
-  odds_htft_json: string | null;
-  odds_oe_json: string | null;
   created_at: number;
 }
 
@@ -276,18 +274,16 @@ export function insertMatch(m: Omit<StoredMatch, "id" | "created_at">): { id: st
      home_team, away_team, home_score, away_score, home_team_id, away_team_id,
      home_stats_json, away_stats_json,
      odds_1x2_json, odds_ou_json, odds_ah_json, odds_btts_json,
-     odds_dc_json, odds_eh_json, odds_dnb_json, odds_cs_json,
-     odds_htft_json, odds_oe_json, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     odds_dc_json, odds_dnb_json, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     id, m.job_id, m.league_name, m.country_name, m.odds_portal_path, m.year,
     m.match_date, m.home_team, m.away_team, m.home_score ?? null, m.away_score ?? null,
     m.home_team_id ?? null, m.away_team_id ?? null,
     m.home_stats_json ?? null, m.away_stats_json ?? null,
     m.odds_1x2_json ?? null, m.odds_ou_json ?? null, m.odds_ah_json ?? null,
-    m.odds_btts_json ?? null, m.odds_dc_json ?? null, m.odds_eh_json ?? null,
-    m.odds_dnb_json ?? null, m.odds_cs_json ?? null, m.odds_htft_json ?? null,
-    m.odds_oe_json ?? null, now
+    m.odds_btts_json ?? null, m.odds_dc_json ?? null, m.odds_dnb_json ?? null,
+    now
   );
   return { id, inserted: result.changes > 0 };
 }
@@ -495,11 +491,6 @@ export interface ProcessingMatch {
   po_btts_json: string | null;
   po_dc_json: string | null;
   po_dnb_json: string | null;
-  po_cs_json: string | null;
-  po_eh_json: string | null;
-  po_htft_json: string | null;
-  po_oe_json: string | null;
-  po_wtbh_json: string | null;
   created_at: number;
 }
 
@@ -515,9 +506,8 @@ export function insertProcessingMatch(m: Omit<ProcessingMatch, "id" | "created_a
      home_team_stats_json, away_team_stats_json,
      home_player_stats_json, away_player_stats_json,
      po_1x2_json, po_ou_json, po_ah_json, po_btts_json,
-     po_dc_json, po_dnb_json, po_cs_json, po_eh_json,
-     po_htft_json, po_oe_json, po_wtbh_json, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     po_dc_json, po_dnb_json, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     id, m.job_id, m.date, m.home_team, m.away_team,
     m.home_team_id ?? null, m.away_team_id ?? null,
@@ -529,8 +519,6 @@ export function insertProcessingMatch(m: Omit<ProcessingMatch, "id" | "created_a
     m.home_player_stats_json ?? null, m.away_player_stats_json ?? null,
     m.po_1x2_json ?? null, m.po_ou_json ?? null, m.po_ah_json ?? null,
     m.po_btts_json ?? null, m.po_dc_json ?? null, m.po_dnb_json ?? null,
-    m.po_cs_json ?? null, m.po_eh_json ?? null,
-    m.po_htft_json ?? null, m.po_oe_json ?? null, m.po_wtbh_json ?? null,
     now
   );
   return { id, inserted: result.changes > 0 };

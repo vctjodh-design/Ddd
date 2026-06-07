@@ -329,8 +329,7 @@ function PlayerPanel({ teamName, playerStats }: { teamName: string; playerStats:
 
 const MARKETS: Array<[string, string]> = [
   ["1x2","1X2"], ["ou","O/U"], ["ah","AH"], ["btts","BTTS"],
-  ["dc","DC"], ["eh","EH"], ["dnb","DNB"], ["cs","CS"],
-  ["htft","HT/FT"], ["oe","O/E"],
+  ["dc","DC"], ["dnb","DNB"],
 ];
 
 function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () => void }) {

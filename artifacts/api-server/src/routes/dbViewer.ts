@@ -74,11 +74,7 @@ router.get("/db/match/:id", (req, res) => {
         "ah":   parseJson(m.po_ah_json),
         "btts": parseJson(m.po_btts_json),
         "dc":   parseJson(m.po_dc_json),
-        "eh":   parseJson(m.po_eh_json),
         "dnb":  parseJson(m.po_dnb_json),
-        "cs":   parseJson(m.po_cs_json),
-        "htft": parseJson(m.po_htft_json),
-        "oe":   parseJson(m.po_oe_json),
       },
       createdAt: m.created_at,
     });
@@ -107,11 +103,7 @@ router.get("/db/match/:id", (req, res) => {
       "ah":   parseJson(m.odds_ah_json),
       "btts": parseJson(m.odds_btts_json),
       "dc":   parseJson(m.odds_dc_json),
-      "eh":   parseJson(m.odds_eh_json),
       "dnb":  parseJson(m.odds_dnb_json),
-      "cs":   parseJson(m.odds_cs_json),
-      "htft": parseJson(m.odds_htft_json),
-      "oe":   parseJson(m.odds_oe_json),
     },
     createdAt: m.created_at,
   });
