@@ -180,7 +180,7 @@ async function fetchMarketOnce(
   matchUrl: string,
   apiCode: string,
   hasLine: boolean,
-): Promise<BEBookmakerEntry[]> {
+): Promise<{ entries: BEBookmakerEntry[]; status: number }> {
   const url = `${BASE}/match-odds/${matchId}/0/${apiCode}/odds/?lang=en`;
   const resp = await fetch(url, {
     headers: {
@@ -191,27 +191,47 @@ async function fetchMarketOnce(
       "X-Requested-With": "XMLHttpRequest",
     },
     redirect: "follow",
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(25_000),
   });
-  if (!resp.ok) return [];
-  const json = (await resp.json()) as { odds?: string };
-  return parseMarketHtml(json.odds ?? "", hasLine);
+  if (!resp.ok) return { entries: [], status: resp.status };
+  // BetExplorer returns JSON { odds: "<html>" } for all markets
+  const text = await resp.text();
+  let oddsHtml = "";
+  try {
+    const json = JSON.parse(text) as { odds?: string };
+    oddsHtml = json.odds ?? "";
+  } catch {
+    // Some markets return plain HTML directly
+    oddsHtml = text;
+  }
+  return { entries: parseMarketHtml(oddsHtml, hasLine), status: 200 };
 }
 
-/** Fetch a single market with up to 2 retries (3 s back-off each) on network error */
+/**
+ * Fetch a single market with retry on 429 (rate-limit) and network errors.
+ * Uses exponential back-off: 5 s → 12 s → 25 s.
+ */
 async function fetchMarket(
   matchId: string,
   matchUrl: string,
   apiCode: string,
   hasLine: boolean,
+  log?: (msg: string) => void,
 ): Promise<BEBookmakerEntry[]> {
+  const delays = [5000, 12000, 25000];
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      if (attempt > 0) await sleep(3000 * attempt);
-      return await fetchMarketOnce(matchId, matchUrl, apiCode, hasLine);
+      const { entries, status } = await fetchMarketOnce(matchId, matchUrl, apiCode, hasLine);
+      if (status === 429) {
+        const wait = delays[attempt] ?? 30000;
+        log?.(`    [BE] ${apiCode.toUpperCase()} rate-limited (429) — waiting ${wait / 1000}s…`);
+        await sleep(wait);
+        continue;
+      }
+      return entries;
     } catch (err) {
       if (attempt === 2) throw err;
-      // transient network error — retry
+      await sleep(delays[attempt] ?? 5000);
     }
   }
   return [];
@@ -219,7 +239,7 @@ async function fetchMarket(
 
 /**
  * Fetch all 6 per-bookmaker markets for a match.
- * Rate-limited with ~1 s between requests to avoid 429s.
+ * Uses a 5 s base delay between markets to stay within BetExplorer's rate limit.
  */
 export async function fetchMatchMarkets(
   matchId: string,
@@ -230,13 +250,19 @@ export async function fetchMatchMarkets(
 
   for (const mkt of MARKETS) {
     try {
-      const entries = await fetchMarket(matchId, matchUrl, mkt.apiCode, mkt.hasLine);
+      const entries = await fetchMarket(matchId, matchUrl, mkt.apiCode, mkt.hasLine, log);
       result[mkt.label] = entries;
-      log?.(`    [BE] ${mkt.label.toUpperCase()}: ${entries.length} bookmaker entries`);
+      // Count unique bookmakers for the log
+      const uniqueBooks = new Set(entries.map(e => e.bookmaker)).size;
+      const lineInfo = mkt.hasLine
+        ? `, lines: ${[...new Set(entries.map(e => e.line))].sort((a, b) => (a ?? 0) - (b ?? 0)).join("/")}`
+        : "";
+      log?.(`    [BE] ${mkt.label.toUpperCase()}: ${entries.length} entries (${uniqueBooks} bookmaker${uniqueBooks !== 1 ? "s" : ""}${lineInfo})`);
     } catch (e) {
       log?.(`    [BE] ${mkt.label.toUpperCase()} failed: ${e}`);
     }
-    await sleep(1800);
+    // 5 s between markets to avoid 429 — BetExplorer is strict about this
+    await sleep(5000);
   }
   return result;
 }
