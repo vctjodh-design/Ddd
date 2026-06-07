@@ -593,6 +593,15 @@ export default function Home() {
               <DatabaseIcon className="w-3.5 h-3.5" />
               <span>DB</span>
             </button>
+            <div className="w-px h-4 bg-border hidden sm:block" />
+            <button
+              onClick={() => navigate("/processing")}
+              className="hidden sm:flex items-center gap-1.5 text-muted-foreground hover:text-primary transition-colors uppercase tracking-widest"
+              title="Processing engine"
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span>Processing</span>
+            </button>
           </div>
         </div>
       </header>
