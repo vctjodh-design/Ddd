@@ -301,21 +301,25 @@ async function runJob(jobId: string, params: StartProcessingParams) {
       updateProcessingJob(jobId, { processed, stored, current_match: label });
       log(`[${processed}/${fixtures.length}] ${label} (${fx.leagueName}, ${fx.countryName})`);
 
-      // Fetch team stats (history) in parallel
+      // Fetch team stats, player stats in parallel
       const matchTs = fx.kickoffTs || undefined;
-      const [homeTeamStats, awayTeamStats] = await Promise.all([
-        fetchStatsHubTeamHistory(fx.homeTeamId, matchTs).catch(() => null),
-        fetchStatsHubTeamHistory(fx.awayTeamId, matchTs).catch(() => null),
+      const [[homeTeamStats, awayTeamStats], [homePlayerStats, awayPlayerStats]] = await Promise.all([
+        Promise.all([
+          fetchStatsHubTeamHistory(fx.homeTeamId, matchTs).catch(() => null),
+          fetchStatsHubTeamHistory(fx.awayTeamId, matchTs).catch(() => null),
+        ]),
+        Promise.all([
+          fetchPlayerStats(fx.homeTeamId),
+          fetchPlayerStats(fx.awayTeamId),
+        ]),
       ]);
+
       const homeStatMatches = homeTeamStats?.statHistory?.[0]?.matches?.length ?? 0;
       const awayStatMatches = awayTeamStats?.statHistory?.[0]?.matches?.length ?? 0;
-      log(`  ↳ Team stats: home=${homeStatMatches} match(es), away=${awayStatMatches} match(es)`);
+      const bothTeamStatsNull = homeTeamStats === null && awayTeamStats === null;
+      const oneTeamStatNull   = (homeTeamStats === null) !== (awayTeamStats === null);
 
-      // Fetch player stats (last games with lineups) in parallel
-      const [homePlayerStats, awayPlayerStats] = await Promise.all([
-        fetchPlayerStats(fx.homeTeamId),
-        fetchPlayerStats(fx.awayTeamId),
-      ]);
+      log(`  ↳ Team stats: home=${homeTeamStats ? homeStatMatches + " match(es)" : "n/a"}, away=${awayTeamStats ? awayStatMatches + " match(es)" : "n/a"}${bothTeamStatsNull ? " (no league data — likely international)" : ""}`);
       log(`  ↳ Player stats: home=${homePlayerStats.length} games, away=${awayPlayerStats.length} games`);
 
       // ── Condition 1: Match must be finished (score known, not in-progress/not-started) ──
@@ -328,13 +332,23 @@ async function runJob(jobId: string, params: StartProcessingParams) {
       }
 
       // ── Condition 2: Team stats must exist for both sides ──
-      if (!homeTeamStats || !awayTeamStats || homeStatMatches === 0 || awayStatMatches === 0) {
-        log(`  ↳ ⏭ Skipped — team stats missing (home=${homeStatMatches}, away=${awayStatMatches})`);
+      // Exception: if NEITHER team has StatsHub league data (e.g. international/national teams),
+      // we allow the match through — it will be stored based on conditions 1 & 4 alone.
+      if (oneTeamStatNull) {
+        // One team has stats, the other doesn't — asymmetric data, skip.
+        log(`  ↳ ⏭ Skipped — team stats only available for one side`);
+        continue;
+      }
+      if (!bothTeamStatsNull && (homeStatMatches === 0 || awayStatMatches === 0)) {
+        // Both have StatsHub objects but match history is empty — genuine data gap.
+        log(`  ↳ ⏭ Skipped — team stats exist but match history is empty (home=${homeStatMatches}, away=${awayStatMatches})`);
         continue;
       }
 
       // ── Condition 3: Player stats must exist for both sides ──
-      if (homePlayerStats.length === 0 || awayPlayerStats.length === 0) {
+      // Also waived for international matches (bothTeamStatsNull) where StatsHub
+      // last-games data may not cover national team fixtures.
+      if (!bothTeamStatsNull && (homePlayerStats.length === 0 || awayPlayerStats.length === 0)) {
         log(`  ↳ ⏭ Skipped — player stats missing (home=${homePlayerStats.length}, away=${awayPlayerStats.length})`);
         continue;
       }
