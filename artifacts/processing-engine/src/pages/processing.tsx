@@ -5,7 +5,7 @@ import { useLocation } from "wouter";
 import {
   Activity, ChevronLeft, ChevronRight, CalendarDays,
   Upload, Database as DatabaseIcon, Zap, RefreshCw,
-  BarChart2, Shield,
+  BarChart2, Shield, Trash2,
 } from "lucide-react";
 
 const TODAY = startOfDay(new Date());
@@ -123,6 +123,8 @@ export default function ProcessingPage() {
   const [pollingJobId, setPollingJobId] = useState<string | null>(null);
   const [stats, setStats]     = useState<PStats | null>(null);
   const [starting, setStarting] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   const dateStr = fmtDate(selectedDate);
@@ -193,6 +195,22 @@ export default function ProcessingPage() {
     await Promise.all([loadJobs(), loadStats()]);
   };
 
+  const clearAllMatches = async () => {
+    setClearing(true);
+    setShowClearConfirm(false);
+    try {
+      const r = await fetch(apiUrl("/processing/matches/all"), { method: "DELETE" });
+      if (!r.ok) { alert("Failed to clear database"); return; }
+      setActiveJob(null);
+      setPollingJobId(null);
+      await Promise.all([loadJobs(), loadStats()]);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setClearing(false);
+    }
+  };
+
   const dateJobForSelected = jobs.find(j => j.date === dateStr);
   const isRunning = dateJobForSelected?.status === "running" || dateJobForSelected?.status === "pending";
   const dateStrip = buildDateStrip(stripCenter);
@@ -210,6 +228,48 @@ export default function ProcessingPage() {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-mono">
+
+      {/* ── Clear confirmation modal ── */}
+      <AnimatePresence>
+        {showClearConfirm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="border border-red-500/40 bg-card/95 backdrop-blur p-6 max-w-sm w-full mx-4 space-y-4"
+            >
+              <div className="flex items-center gap-2 text-red-400">
+                <Trash2 className="w-4 h-4" />
+                <span className="text-xs font-mono uppercase tracking-widest font-bold">Clear All Data</span>
+              </div>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                This will permanently delete <span className="text-foreground font-bold">all {stats?.matches ?? 0} match{(stats?.matches ?? 0) !== 1 ? "es" : ""}</span> and all processing job history from the database. This cannot be undone.
+              </p>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={clearAllMatches}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 border border-red-500/60 text-red-400 text-[10px] font-mono uppercase tracking-widest hover:bg-red-500/10 transition-all"
+                >
+                  <Trash2 className="w-3 h-3" /> Yes, Delete All
+                </button>
+                <button
+                  onClick={() => setShowClearConfirm(false)}
+                  className="flex-1 px-3 py-2 border border-border/40 text-muted-foreground text-[10px] font-mono uppercase tracking-widest hover:border-border hover:text-foreground transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* ── Top nav ── */}
       <header className="border-b border-border/50 bg-card/30 backdrop-blur-sm sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -304,7 +364,7 @@ export default function ProcessingPage() {
           </div>
 
           {/* Selected date action bar */}
-          <div className="border-t border-border/30 px-4 py-3 flex items-center justify-between">
+          <div className="border-t border-border/30 px-4 py-3 flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-bold text-foreground">{fmtDisplay(selectedDate)}</div>
               <div className="text-[10px] text-muted-foreground mt-0.5">
@@ -313,20 +373,37 @@ export default function ProcessingPage() {
                   : "No data yet for this date"}
               </div>
             </div>
-            <button
-              onClick={startJob}
-              disabled={starting || isRunning}
-              className={`flex items-center gap-2 px-4 py-2 border text-xs font-mono uppercase tracking-widest transition-all ${
-                starting || isRunning
-                  ? "border-border/30 text-muted-foreground/40 cursor-not-allowed"
-                  : "border-primary/60 text-primary hover:bg-primary/10 hover:border-primary active:bg-primary/20"
-              }`}
-            >
-              {starting || isRunning
-                ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Processing…</>
-                : <><Upload className="w-3.5 h-3.5" /> Process Date</>
-              }
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowClearConfirm(true)}
+                disabled={clearing || (stats?.matches ?? 0) === 0}
+                title="Delete all matches from database"
+                className={`flex items-center gap-1.5 px-3 py-2 border text-[10px] font-mono uppercase tracking-widest transition-all ${
+                  clearing || (stats?.matches ?? 0) === 0
+                    ? "border-border/20 text-muted-foreground/30 cursor-not-allowed"
+                    : "border-red-500/40 text-red-400/70 hover:border-red-500/70 hover:text-red-400 hover:bg-red-500/5"
+                }`}
+              >
+                {clearing
+                  ? <><RefreshCw className="w-3 h-3 animate-spin" /> Clearing…</>
+                  : <><Trash2 className="w-3 h-3" /> Clear DB</>
+                }
+              </button>
+              <button
+                onClick={startJob}
+                disabled={starting || isRunning}
+                className={`flex items-center gap-2 px-4 py-2 border text-xs font-mono uppercase tracking-widest transition-all ${
+                  starting || isRunning
+                    ? "border-border/30 text-muted-foreground/40 cursor-not-allowed"
+                    : "border-primary/60 text-primary hover:bg-primary/10 hover:border-primary active:bg-primary/20"
+                }`}
+              >
+                {starting || isRunning
+                  ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Processing…</>
+                  : <><Upload className="w-3.5 h-3.5" /> Process Date</>
+                }
+              </button>
+            </div>
           </div>
         </div>
 

@@ -24,6 +24,7 @@ export function getDb(): Database.Database {
 }
 
 function initSchema(db: Database.Database) {
+  // Create tables and non-unique indexes first
   db.exec(`
     CREATE TABLE IF NOT EXISTS bulk_jobs (
       id             TEXT PRIMARY KEY,
@@ -76,7 +77,6 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_sm_job    ON stored_matches(job_id);
     CREATE INDEX IF NOT EXISTS idx_sm_league ON stored_matches(odds_portal_path, year);
     CREATE INDEX IF NOT EXISTS idx_sm_date   ON stored_matches(match_date);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_sm_unique ON stored_matches(odds_portal_path, year, match_date, home_team, away_team);
 
     CREATE TABLE IF NOT EXISTS processing_jobs (
       id              TEXT PRIMARY KEY,
@@ -129,8 +129,42 @@ function initSchema(db: Database.Database) {
     );
     CREATE INDEX IF NOT EXISTS idx_pm_job  ON processing_matches(job_id);
     CREATE INDEX IF NOT EXISTS idx_pm_date ON processing_matches(date);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_pm_unique ON processing_matches(date, home_team, away_team);
   `);
+
+  // Deduplicate processing_matches before enforcing the unique constraint —
+  // keeps the row with the largest created_at per (date, home_team, away_team).
+  const pmUniqueExists = (db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_pm_unique'`
+  ).get()) as unknown;
+  if (!pmUniqueExists) {
+    db.exec(`
+      DELETE FROM processing_matches
+      WHERE id NOT IN (
+        SELECT id FROM processing_matches
+        GROUP BY date, home_team, away_team
+        HAVING id = MAX(id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pm_unique
+        ON processing_matches(date, home_team, away_team);
+    `);
+  }
+
+  // Same dedup + unique index for stored_matches
+  const smUniqueExists = (db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_sm_unique'`
+  ).get()) as unknown;
+  if (!smUniqueExists) {
+    db.exec(`
+      DELETE FROM stored_matches
+      WHERE id NOT IN (
+        SELECT id FROM stored_matches
+        GROUP BY odds_portal_path, year, match_date, home_team, away_team
+        HAVING id = MAX(id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sm_unique
+        ON stored_matches(odds_portal_path, year, match_date, home_team, away_team);
+    `);
+  }
 }
 
 // ── Job helpers ──────────────────────────────────────────────────────────────
@@ -424,6 +458,13 @@ export function deleteProcessingJob(id: string) {
   const db = getDb();
   db.prepare("DELETE FROM processing_matches WHERE job_id = ?").run(id);
   db.prepare("DELETE FROM processing_jobs WHERE id = ?").run(id);
+}
+
+export function clearAllProcessingMatches(): { deletedMatches: number; deletedJobs: number } {
+  const db = getDb();
+  const matchResult = db.prepare("DELETE FROM processing_matches").run();
+  const jobResult   = db.prepare("DELETE FROM processing_jobs").run();
+  return { deletedMatches: matchResult.changes, deletedJobs: jobResult.changes };
 }
 
 // ── Processing Match helpers ──────────────────────────────────────────────────

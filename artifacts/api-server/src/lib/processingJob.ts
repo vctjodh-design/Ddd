@@ -309,7 +309,7 @@ async function runJob(jobId: string, params: StartProcessingParams) {
       ]);
       const homeStatMatches = homeTeamStats?.statHistory?.[0]?.matches?.length ?? 0;
       const awayStatMatches = awayTeamStats?.statHistory?.[0]?.matches?.length ?? 0;
-      log(`  ↳ Team stats: home=${homeStatMatches} matches, away=${awayStatMatches} matches`);
+      log(`  ↳ Team stats: home=${homeStatMatches} match(es), away=${awayStatMatches} match(es)`);
 
       // Fetch player stats (last games with lineups) in parallel
       const [homePlayerStats, awayPlayerStats] = await Promise.all([
@@ -317,6 +317,27 @@ async function runJob(jobId: string, params: StartProcessingParams) {
         fetchPlayerStats(fx.awayTeamId),
       ]);
       log(`  ↳ Player stats: home=${homePlayerStats.length} games, away=${awayPlayerStats.length} games`);
+
+      // ── Condition 1: Match must be finished (score known, not in-progress/not-started) ──
+      const finishedStatuses = ["notstarted", "inprogress", "postponed", "cancelled", "abandoned"];
+      const isFinished = !finishedStatuses.includes(fx.status.toLowerCase()) &&
+                         fx.homeScore !== null && fx.awayScore !== null;
+      if (!isFinished) {
+        log(`  ↳ ⏭ Skipped — match not finished (status="${fx.status}", score=${fx.homeScore ?? "?"}:${fx.awayScore ?? "?"})`);
+        continue;
+      }
+
+      // ── Condition 2: Team stats must exist for both sides ──
+      if (!homeTeamStats || !awayTeamStats || homeStatMatches === 0 || awayStatMatches === 0) {
+        log(`  ↳ ⏭ Skipped — team stats missing (home=${homeStatMatches}, away=${awayStatMatches})`);
+        continue;
+      }
+
+      // ── Condition 3: Player stats must exist for both sides ──
+      if (homePlayerStats.length === 0 || awayPlayerStats.length === 0) {
+        log(`  ↳ ⏭ Skipped — player stats missing (home=${homePlayerStats.length}, away=${awayPlayerStats.length})`);
+        continue;
+      }
 
       // Find match on BetExplorer and fetch per-bookmaker market odds
       const beMatch = findBestBEMatch(fx.homeTeamName, fx.awayTeamName, beMatches);
@@ -334,6 +355,13 @@ async function runJob(jobId: string, params: StartProcessingParams) {
         }
       } else {
         log(`  ↳ BetExplorer: no match found`);
+      }
+
+      // ── Condition 4: 1x2 odds from BetExplorer must be present ──
+      const has1x2 = markets?.["1x2"] && markets["1x2"].length > 0;
+      if (!has1x2) {
+        log(`  ↳ ⏭ Skipped — BetExplorer 1x2 odds not available`);
+        continue;
       }
 
       const toJson = (arr: unknown[] | undefined) =>

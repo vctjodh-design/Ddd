@@ -2,7 +2,7 @@ import { Router } from "express";
 import { startProcessingJob } from "../lib/processingJob.js";
 import {
   getProcessingJob, listProcessingJobs, deleteProcessingJob,
-  listProcessingMatches, getProcessingDbStats,
+  listProcessingMatches, getProcessingDbStats, clearAllProcessingMatches,
 } from "../lib/db.js";
 
 const router = Router();
@@ -77,6 +77,12 @@ router.get("/processing/matches", (req, res) => {
 /** GET /api/processing/stats */
 router.get("/processing/stats", (_req, res) => {
   res.json(getProcessingDbStats());
+});
+
+/** DELETE /api/processing/matches/all — wipe all matches + jobs */
+router.delete("/processing/matches/all", (_req, res) => {
+  const result = clearAllProcessingMatches();
+  res.json({ deleted: true, deletedMatches: result.deletedMatches, deletedJobs: result.deletedJobs });
 });
 
 /** DELETE /api/processing/:id */
