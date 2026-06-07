@@ -64,6 +64,7 @@ router.get("/db/match/:id", (req, res) => {
       awayTeam:        m.away_team,
       homeScore:       m.home_score,
       awayScore:       m.away_score,
+      kickoffTs:       m.kickoff_ts ?? null,
       homeStats:       parseJson(m.home_team_stats_json),
       awayStats:       parseJson(m.away_team_stats_json),
       homePlayerStats: parseJson(m.home_player_stats_json),
