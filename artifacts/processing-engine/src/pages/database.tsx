@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity, Database, ChevronLeft, ChevronRight,
   Trash2, RefreshCw, X, BarChart2, Shield, Users, LayoutList,
+  Brain, Zap, Star, TrendingUp,
 } from "lucide-react";
 
 function apiUrl(path: string) {

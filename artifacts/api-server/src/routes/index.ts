@@ -5,6 +5,7 @@ import fixtureDetailRouter from "./fixture-detail.js";
 import bulkRouter from "./bulk.js";
 import dbViewerRouter from "./dbViewer.js";
 import processingRouter from "./processing.js";
+import modelRouter from "./model.js";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(fixtureDetailRouter);
 router.use(bulkRouter);
 router.use(dbViewerRouter);
 router.use(processingRouter);
+router.use(modelRouter);
 
 export default router;

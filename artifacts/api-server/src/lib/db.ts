@@ -140,6 +140,17 @@ function initSchema(db: Database.Database) {
     `);
   }
 
+  // Model store for ML model serialization
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS model_store (
+      name        TEXT PRIMARY KEY,
+      data_json   TEXT NOT NULL,
+      n_samples   INTEGER DEFAULT 0,
+      trained_at  INTEGER DEFAULT 0,
+      updated_at  INTEGER DEFAULT (unixepoch())
+    );
+  `);
+
   // Drop obsolete market columns from existing databases (migration)
   const pmCols = (db.prepare("PRAGMA table_info(processing_matches)").all() as { name: string }[]).map(c => c.name);
   for (const col of ["po_cs_json", "po_eh_json", "po_htft_json", "po_oe_json", "po_wtbh_json"]) {
