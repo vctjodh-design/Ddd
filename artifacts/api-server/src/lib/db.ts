@@ -76,6 +76,7 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_sm_job    ON stored_matches(job_id);
     CREATE INDEX IF NOT EXISTS idx_sm_league ON stored_matches(odds_portal_path, year);
     CREATE INDEX IF NOT EXISTS idx_sm_date   ON stored_matches(match_date);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sm_unique ON stored_matches(odds_portal_path, year, match_date, home_team, away_team);
 
     CREATE TABLE IF NOT EXISTS processing_jobs (
       id              TEXT PRIMARY KEY,
@@ -128,6 +129,7 @@ function initSchema(db: Database.Database) {
     );
     CREATE INDEX IF NOT EXISTS idx_pm_job  ON processing_matches(job_id);
     CREATE INDEX IF NOT EXISTS idx_pm_date ON processing_matches(date);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pm_unique ON processing_matches(date, home_team, away_team);
   `);
 }
 
@@ -230,12 +232,12 @@ export interface StoredMatch {
   created_at: number;
 }
 
-export function insertMatch(m: Omit<StoredMatch, "id" | "created_at">): string {
+export function insertMatch(m: Omit<StoredMatch, "id" | "created_at">): { id: string; inserted: boolean } {
   const db = getDb();
   const id = `match_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const now = Date.now();
-  db.prepare(`
-    INSERT OR REPLACE INTO stored_matches
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO stored_matches
     (id, job_id, league_name, country_name, odds_portal_path, year, match_date,
      home_team, away_team, home_score, away_score, home_team_id, away_team_id,
      home_stats_json, away_stats_json,
@@ -253,7 +255,7 @@ export function insertMatch(m: Omit<StoredMatch, "id" | "created_at">): string {
     m.odds_dnb_json ?? null, m.odds_cs_json ?? null, m.odds_htft_json ?? null,
     m.odds_oe_json ?? null, now
   );
-  return id;
+  return { id, inserted: result.changes > 0 };
 }
 
 export function listMatches(opts: {
@@ -295,12 +297,71 @@ export function deleteMatch(id: string) {
 
 export function dbStats() {
   const db = getDb();
-  const jobs = db.prepare("SELECT COUNT(*) as n FROM bulk_jobs").get() as { n: number };
-  const matches = db.prepare("SELECT COUNT(*) as n FROM stored_matches").get() as { n: number };
-  const withStats = db.prepare("SELECT COUNT(*) as n FROM stored_matches WHERE home_stats_json IS NOT NULL AND away_stats_json IS NOT NULL").get() as { n: number };
-  const withOdds  = db.prepare("SELECT COUNT(*) as n FROM stored_matches WHERE odds_1x2_json IS NOT NULL").get() as { n: number };
-  const leagues = db.prepare("SELECT DISTINCT odds_portal_path, league_name, country_name FROM stored_matches ORDER BY league_name").all() as {odds_portal_path: string; league_name: string; country_name: string}[];
-  return { jobs: jobs.n, matches: matches.n, withStats: withStats.n, withOdds: withOdds.n, leagues };
+  const smMatches  = db.prepare("SELECT COUNT(*) as n FROM stored_matches").get() as { n: number };
+  const pmMatches  = db.prepare("SELECT COUNT(*) as n FROM processing_matches").get() as { n: number };
+  const smStats    = db.prepare("SELECT COUNT(*) as n FROM stored_matches WHERE home_stats_json IS NOT NULL AND away_stats_json IS NOT NULL").get() as { n: number };
+  const pmStats    = db.prepare("SELECT COUNT(*) as n FROM processing_matches WHERE home_team_stats_json IS NOT NULL").get() as { n: number };
+  const smOdds     = db.prepare("SELECT COUNT(*) as n FROM stored_matches WHERE odds_1x2_json IS NOT NULL").get() as { n: number };
+  const pmOdds     = db.prepare("SELECT COUNT(*) as n FROM processing_matches WHERE po_1x2_json IS NOT NULL").get() as { n: number };
+  const leagues    = db.prepare("SELECT DISTINCT odds_portal_path, league_name, country_name FROM stored_matches ORDER BY league_name").all() as {odds_portal_path: string; league_name: string; country_name: string}[];
+  return {
+    matches:  smMatches.n + pmMatches.n,
+    withStats: smStats.n + pmStats.n,
+    withOdds:  smOdds.n + pmOdds.n,
+    leagues,
+  };
+}
+
+/** Row shape returned by the viewer union query */
+export interface ViewerMatchRow {
+  id: string;
+  source: "stored" | "processing";
+  date: string;
+  home_team: string;
+  away_team: string;
+  home_score: number | null;
+  away_score: number | null;
+  league_name: string | null;
+  country_name: string | null;
+  has_stats: number;
+  has_odds: number;
+  has_player: number;
+  created_at: number;
+}
+
+export function listAllMatchesForViewer(opts: { limit: number; offset: number }): ViewerMatchRow[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT id, 'stored' as source, match_date as date, home_team, away_team,
+           home_score, away_score, league_name, country_name,
+           CASE WHEN home_stats_json IS NOT NULL AND away_stats_json IS NOT NULL THEN 1 ELSE 0 END as has_stats,
+           CASE WHEN odds_1x2_json IS NOT NULL THEN 1 ELSE 0 END as has_odds,
+           0 as has_player,
+           created_at
+    FROM stored_matches
+    UNION ALL
+    SELECT id, 'processing' as source, date, home_team, away_team,
+           home_score, away_score, league_name, country_name,
+           CASE WHEN home_team_stats_json IS NOT NULL THEN 1 ELSE 0 END as has_stats,
+           CASE WHEN po_1x2_json IS NOT NULL THEN 1 ELSE 0 END as has_odds,
+           CASE WHEN home_player_stats_json IS NOT NULL THEN 1 ELSE 0 END as has_player,
+           created_at
+    FROM processing_matches
+    ORDER BY date DESC, created_at DESC
+    LIMIT ? OFFSET ?
+  `).all(opts.limit, opts.offset) as ViewerMatchRow[];
+}
+
+export function countAllMatchesForViewer(): number {
+  const db = getDb();
+  const r = db.prepare(`
+    SELECT (SELECT COUNT(*) FROM stored_matches) + (SELECT COUNT(*) FROM processing_matches) as n
+  `).get() as { n: number };
+  return r.n;
+}
+
+export function getProcessingMatchById(id: string): ProcessingMatch | null {
+  return getDb().prepare("SELECT * FROM processing_matches WHERE id = ?").get(id) as ProcessingMatch | null;
 }
 
 // ── Processing Job helpers ────────────────────────────────────────────────────
@@ -401,12 +462,12 @@ export interface ProcessingMatch {
   created_at: number;
 }
 
-export function insertProcessingMatch(m: Omit<ProcessingMatch, "id" | "created_at">): string {
+export function insertProcessingMatch(m: Omit<ProcessingMatch, "id" | "created_at">): { id: string; inserted: boolean } {
   const db = getDb();
   const id = `pm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const now = Date.now();
-  db.prepare(`
-    INSERT OR REPLACE INTO processing_matches
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO processing_matches
     (id, job_id, date, home_team, away_team, home_team_id, away_team_id,
      league_name, league_id, country_name, country_flag, kickoff_ts,
      home_score, away_score, status,
@@ -431,7 +492,7 @@ export function insertProcessingMatch(m: Omit<ProcessingMatch, "id" | "created_a
     m.po_htft_json ?? null, m.po_oe_json ?? null, m.po_wtbh_json ?? null,
     now
   );
-  return id;
+  return { id, inserted: result.changes > 0 };
 }
 
 export function listProcessingMatches(opts: { date?: string; jobId?: string; limit?: number; offset?: number }): ProcessingMatch[] {

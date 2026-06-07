@@ -94,28 +94,28 @@ async function runJob(jobId: string, params: StartJobParams) {
       ]);
 
       if (!homeId || !awayId) {
-        log(`  ↳ StatsHub: team IDs not found (home=${homeId}, away=${awayId}) — continuing without stats`);
+        log(`  ↳ StatsHub: team IDs not found (home=${homeId}, away=${awayId}) — skipping`);
+        skipped++;
+        continue;
       }
 
-      // Fetch team history if IDs are available (optional enrichment)
+      // Fetch team history — both teams must have ≥ MIN_MATCH_HISTORY matches
       const matchTs = match.date ? Math.floor(new Date(match.date).getTime() / 1000) : undefined;
-      const [homeStats, awayStats] = homeId && awayId
-        ? await Promise.all([
-            fetchStatsHubTeamHistory(homeId, matchTs),
-            fetchStatsHubTeamHistory(awayId, matchTs),
-          ])
-        : [null, null];
+      const [homeStats, awayStats] = await Promise.all([
+        fetchStatsHubTeamHistory(homeId, matchTs),
+        fetchStatsHubTeamHistory(awayId, matchTs),
+      ]);
 
       const homeMatches = homeStats?.statHistory?.[0]?.matches?.length ?? 0;
       const awayMatches = awayStats?.statHistory?.[0]?.matches?.length ?? 0;
 
-      if (homeId && awayId) {
-        if (homeMatches < MIN_MATCH_HISTORY || awayMatches < MIN_MATCH_HISTORY) {
-          log(`  ↳ StatsHub: insufficient history (home=${homeMatches}, away=${awayMatches}, min=${MIN_MATCH_HISTORY}) — continuing without stats`);
-        } else {
-          log(`  ↳ StatsHub OK (home=${homeMatches}, away=${awayMatches})`);
-        }
+      if (homeMatches < MIN_MATCH_HISTORY || awayMatches < MIN_MATCH_HISTORY) {
+        log(`  ↳ StatsHub: insufficient history (home=${homeMatches}, away=${awayMatches}, min=${MIN_MATCH_HISTORY}) — skipping`);
+        skipped++;
+        continue;
       }
+
+      log(`  ↳ StatsHub OK (home=${homeMatches}, away=${awayMatches})`);
 
       log(`  ↳ Fetching odds…`);
 
@@ -142,8 +142,8 @@ async function runJob(jobId: string, params: StartJobParams) {
           : null;
       }
 
-      // Store in DB
-      insertMatch({
+      // Store in DB (INSERT OR IGNORE — silently skips if already exists)
+      const { inserted } = insertMatch({
         job_id:           jobId,
         league_name:      params.leagueName,
         country_name:     params.countryName,
@@ -169,6 +169,12 @@ async function runJob(jobId: string, params: StartJobParams) {
         odds_htft_json:   oddsJsonMap["odds_htft_json"] ?? null,
         odds_oe_json:     oddsJsonMap["odds_oe_json"] ?? null,
       });
+
+      if (!inserted) {
+        log(`  ↳ ⚠ Duplicate — already stored, skipping`);
+        skipped++;
+        continue;
+      }
 
       stored++;
       const oddsCount = Object.values(oddsJsonMap).filter(Boolean).length;

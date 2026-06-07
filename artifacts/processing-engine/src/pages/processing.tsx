@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { format, addDays, startOfDay, subDays, parseISO } from "date-fns";
+import { format, addDays, startOfDay, subDays } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { useLocation } from "wouter";
 import {
   Activity, ChevronLeft, ChevronRight, CalendarDays,
   Upload, Database as DatabaseIcon, Zap, RefreshCw,
-  ChevronDown, ChevronUp, Shield, BarChart2, Trash2, Clock,
+  BarChart2, Shield,
 } from "lucide-react";
 
 const TODAY = startOfDay(new Date());
@@ -121,19 +121,16 @@ export default function ProcessingPage() {
   const [jobs, setJobs]       = useState<ProcessingJobSummary[]>([]);
   const [activeJob, setActiveJob] = useState<ProcessingJobDetail | null>(null);
   const [pollingJobId, setPollingJobId] = useState<string | null>(null);
-  const [matches, setMatches] = useState<MatchRow[]>([]);
   const [stats, setStats]     = useState<PStats | null>(null);
   const [starting, setStarting] = useState(false);
-  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
-  const [loadingMatches, setLoadingMatches] = useState(false);
-  const logEndRef = useRef<HTMLDivElement>(null);
+  const logContainerRef = useRef<HTMLDivElement>(null);
 
   const dateStr = fmtDate(selectedDate);
 
-  // Scroll log to bottom on update
+  // Scroll log container (not the page) to bottom on new lines
   useEffect(() => {
-    if (activeJob?.logs && logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: "smooth" });
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [activeJob?.logs?.length]);
 
@@ -142,16 +139,6 @@ export default function ProcessingPage() {
       const r = await fetch(apiUrl("/processing/list"));
       if (r.ok) setJobs(await r.json() as ProcessingJobSummary[]);
     } catch {}
-  }, []);
-
-  const loadMatches = useCallback(async (date: string) => {
-    setLoadingMatches(true);
-    try {
-      const r = await fetch(apiUrl(`/processing/matches?date=${date}`));
-      if (r.ok) setMatches(await r.json() as MatchRow[]);
-    } catch {} finally {
-      setLoadingMatches(false);
-    }
   }, []);
 
   const loadStats = useCallback(async () => {
@@ -166,17 +153,12 @@ export default function ProcessingPage() {
     loadStats();
   }, []);
 
-  useEffect(() => {
-    loadMatches(dateStr);
-  }, [dateStr]);
-
   useJobPoller(pollingJobId, (j) => {
     setActiveJob(j);
     if (j.status === "complete" || j.status === "failed") {
       setPollingJobId(null);
       loadJobs();
       loadStats();
-      loadMatches(dateStr);
     }
   });
 
@@ -195,7 +177,6 @@ export default function ProcessingPage() {
       }
       const d = await r.json() as { jobId: string };
       setPollingJobId(d.jobId);
-      setExpandedJobId(d.jobId);
       setActiveJob(null);
       await loadJobs();
     } catch (e) {
@@ -209,7 +190,7 @@ export default function ProcessingPage() {
     await fetch(apiUrl(`/processing/${id}`), { method: "DELETE" });
     if (pollingJobId === id) setPollingJobId(null);
     if (activeJob?.id === id) setActiveJob(null);
-    await Promise.all([loadJobs(), loadStats(), loadMatches(dateStr)]);
+    await Promise.all([loadJobs(), loadStats()]);
   };
 
   const dateJobForSelected = jobs.find(j => j.date === dateStr);
@@ -261,26 +242,6 @@ export default function ProcessingPage() {
       </header>
 
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-
-        {/* ── Stats strip ── */}
-        {stats && (
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-            {[
-              { label: "Jobs", val: stats.jobs,       icon: <Zap className="w-3 h-3" /> },
-              { label: "Matches", val: stats.matches,   icon: <Shield className="w-3 h-3" /> },
-              { label: "With Stats", val: stats.withStats, icon: <BarChart2 className="w-3 h-3" /> },
-              { label: "With Players", val: stats.withPlayer, icon: <Activity className="w-3 h-3" /> },
-              { label: "With Odds", val: stats.withOdds,  icon: <DatabaseIcon className="w-3 h-3" /> },
-            ].map(s => (
-              <div key={s.label} className="border border-border/40 bg-card/20 p-3">
-                <div className="flex items-center gap-1.5 text-muted-foreground mb-1">{s.icon}
-                  <span className="text-[9px] uppercase tracking-widest">{s.label}</span>
-                </div>
-                <div className="text-xl font-bold text-primary tabular-nums">{s.val.toLocaleString()}</div>
-              </div>
-            ))}
-          </div>
-        )}
 
         {/* ── Date navigation ── */}
         <div className="border border-border/40 bg-card/20">
@@ -369,213 +330,99 @@ export default function ProcessingPage() {
           </div>
         </div>
 
-        {/* ── Active / recent jobs ── */}
-        {jobs.length > 0 && (
-          <div className="border border-border/40 bg-card/20">
-            <div className="border-b border-border/30 px-4 py-2 flex items-center justify-between">
-              <div className="text-[10px] uppercase tracking-widest text-muted-foreground flex items-center gap-2">
-                <Zap className="w-3 h-3" /> Upload Jobs ({jobs.length})
+        {/* ── Active job log ── */}
+        <AnimatePresence>
+          {activeJob && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="border border-border/40 bg-card/20"
+            >
+              <div className="border-b border-border/30 px-4 py-2 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-muted-foreground">
+                  <Zap className="w-3 h-3" />
+                  <span>Job — {activeJob.date}</span>
+                  <span className={statusBadge(activeJob.status)}>{activeJob.status}</span>
+                  {activeJob.totalMatches > 0 && (
+                    <span className="text-primary/60">
+                      {activeJob.stored}/{activeJob.totalMatches} stored
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={() => { deleteJob(activeJob.id); }}
+                  className="text-muted-foreground hover:text-red-400 transition-colors text-[10px] font-mono uppercase tracking-widest"
+                >
+                  Dismiss
+                </button>
               </div>
-              <button onClick={loadJobs} className="text-muted-foreground hover:text-foreground transition-colors">
-                <RefreshCw className="w-3 h-3" />
-              </button>
-            </div>
 
-            <div className="divide-y divide-border/20">
-              {jobs.slice(0, 10).map(j => {
-                const isExpanded = expandedJobId === j.id;
-                const isActive   = pollingJobId === j.id;
-                const detail     = isActive ? activeJob : null;
-                const pct        = j.totalMatches > 0 ? Math.round((j.processed / j.totalMatches) * 100) : 0;
+              {/* Progress bar */}
+              {activeJob.totalMatches > 0 && (
+                <div className="h-0.5 w-full bg-border/20">
+                  <div
+                    className={`h-0.5 transition-all duration-500 ${activeJob.status === "complete" ? "bg-green-400" : "bg-primary shadow-[0_0_6px_rgba(0,255,255,0.5)]"}`}
+                    style={{ width: `${Math.round((activeJob.processed / activeJob.totalMatches) * 100)}%` }}
+                  />
+                </div>
+              )}
 
-                return (
-                  <div key={j.id} className="group">
-                    <div
-                      className="px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-card/30 transition-colors"
-                      onClick={() => setExpandedJobId(isExpanded ? null : j.id)}
-                    >
-                      {/* Status dot */}
-                      <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                        j.status === "running" ? "bg-primary animate-pulse"
-                        : j.status === "complete" ? "bg-green-400"
-                        : j.status === "failed"   ? "bg-red-400"
-                        : "bg-yellow-400"
-                      }`} />
+              {activeJob.currentMatch && activeJob.status === "running" && (
+                <div className="px-4 py-1.5 text-[10px] font-mono text-primary/60 truncate border-b border-border/20">
+                  ⬡ {activeJob.currentMatch}
+                </div>
+              )}
 
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-xs font-bold text-foreground">{j.date}</span>
-                          <span className={statusBadge(j.status)}>{j.status}</span>
-                          <span className="text-[10px] text-muted-foreground">
-                            {j.stored}/{j.totalMatches} stored
-                          </span>
-                          {j.currentMatch && (
-                            <span className="text-[10px] text-primary/60 truncate max-w-[200px]">
-                              {j.currentMatch}
-                            </span>
-                          )}
-                        </div>
-                        {/* Progress bar */}
-                        {(j.status === "running" || j.status === "complete") && j.totalMatches > 0 && (
-                          <div className="mt-1.5 w-full bg-border/20 h-0.5">
-                            <div
-                              className={`h-0.5 transition-all ${j.status === "complete" ? "bg-green-400" : "bg-primary"}`}
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                        )}
-                      </div>
+              {/* Log output */}
+              <div className="p-4">
+                <div ref={logContainerRef} className="bg-black/40 border border-border/30 p-3 h-56 overflow-y-auto text-[10px] font-mono space-y-0.5">
+                  {activeJob.logs.length === 0
+                    ? <div className="text-center py-8 text-muted-foreground/30">Waiting for output…</div>
+                    : activeJob.logs.map((line, i) => (
+                      <div key={i} className={
+                        line.includes("❌") || line.includes("⚠") ? "text-red-400/80"
+                        : line.includes("✓") || line.includes("✅") ? "text-green-400/80"
+                        : line.includes("🌐") || line.includes("Stage") ? "text-primary/70"
+                        : "text-muted-foreground/70"
+                      }>{line}</div>
+                    ))
+                  }
+                </div>
+              </div>
 
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <button
-                          onClick={e => { e.stopPropagation(); deleteJob(j.id); }}
-                          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-400 transition-all"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                        {isExpanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
-                      </div>
-                    </div>
+              {(activeJob.status === "complete" || activeJob.status === "failed") && (
+                <div className="px-4 pb-4 flex items-center gap-3">
+                  <button
+                    onClick={() => navigate("/database")}
+                    className="flex items-center gap-1.5 px-3 py-1.5 border border-primary/50 text-primary text-[10px] font-mono uppercase tracking-widest hover:bg-primary/10 transition-all"
+                  >
+                    <DatabaseIcon className="w-3 h-3" /> View in Database
+                  </button>
+                  <button
+                    onClick={() => setActiveJob(null)}
+                    className="px-3 py-1.5 border border-border/40 text-muted-foreground text-[10px] font-mono uppercase tracking-widest hover:border-border hover:text-foreground transition-all"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-                    {/* Expanded log */}
-                    <AnimatePresence>
-                      {isExpanded && (
-                        <motion.div
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: "auto", opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.2 }}
-                          className="overflow-hidden"
-                        >
-                          <div className="px-4 pb-4">
-                            <div className="bg-black/40 border border-border/30 p-3 max-h-56 overflow-y-auto text-[10px] font-mono space-y-0.5">
-                              {(detail?.logs ?? [j.lastLog].filter(Boolean) as string[]).map((line, i) => {
-                                const isErr  = line.includes("❌") || line.includes("⚠");
-                                const isOk   = line.includes("✓") || line.includes("✅");
-                                const isPrimary = line.includes("🌐") || line.includes("Stage");
-                                return (
-                                  <div key={i} className={
-                                    isErr     ? "text-red-400/80"
-                                    : isOk    ? "text-green-400/80"
-                                    : isPrimary ? "text-primary/70"
-                                    : "text-muted-foreground/70"
-                                  }>{line}</div>
-                                );
-                              })}
-                              <div ref={logEndRef} />
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                );
-              })}
+        {/* Empty state when no active job */}
+        {!activeJob && (
+          <div className="border border-border/30 bg-card/10 p-10 text-center">
+            <RefreshCw className="w-8 h-8 text-muted-foreground/20 mx-auto mb-3" />
+            <div className="text-xs text-muted-foreground/40 uppercase tracking-widest">No active job</div>
+            <div className="text-[10px] text-muted-foreground/30 mt-1">
+              Select a date above and press "Process Date" to start
             </div>
           </div>
         )}
 
-        {/* ── Stored matches for selected date ── */}
-        <div className="border border-border/40 bg-card/20">
-          <div className="border-b border-border/30 px-4 py-2 flex items-center justify-between">
-            <div className="text-[10px] uppercase tracking-widest text-muted-foreground flex items-center gap-2">
-              <Shield className="w-3 h-3" />
-              Matches for {fmtDisplay(selectedDate)}
-              <span className="text-primary/60">({matches.length})</span>
-            </div>
-            <button
-              onClick={() => loadMatches(dateStr)}
-              className="text-muted-foreground hover:text-foreground transition-colors"
-            ><RefreshCw className="w-3 h-3" /></button>
-          </div>
-
-          {loadingMatches ? (
-            <div className="p-8 text-center text-muted-foreground/40 text-xs">Loading…</div>
-          ) : matches.length === 0 ? (
-            <div className="p-8 text-center">
-              <DatabaseIcon className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
-              <div className="text-xs text-muted-foreground/40">No matches stored for this date</div>
-              <div className="text-[10px] text-muted-foreground/30 mt-1">Press "Process Date" to fetch and store data</div>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border/30 text-[9px] text-muted-foreground uppercase tracking-widest">
-                    <th className="text-left px-4 py-2">Time</th>
-                    <th className="text-left px-4 py-2">Match</th>
-                    <th className="text-left px-4 py-2">League</th>
-                    <th className="text-left px-4 py-2">Score</th>
-                    <th className="text-center px-2 py-2">Stats</th>
-                    <th className="text-center px-2 py-2">Players</th>
-                    <th className="text-center px-2 py-2">1X2</th>
-                    <th className="text-center px-2 py-2">O/U</th>
-                    <th className="text-center px-2 py-2">AH</th>
-                    <th className="text-center px-2 py-2">More</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/15">
-                  {matches.map(m => {
-                    const allOddsCount = [m.hasPo1x2, m.hasPoOU, m.hasPoAH].filter(Boolean).length;
-                    const statsOk = m.hasHomeStats && m.hasAwayStats;
-                    const playerOk = m.hasHomePlayer && m.hasAwayPlayer;
-                    return (
-                      <motion.tr
-                        key={m.id}
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        className="hover:bg-card/30 transition-colors group"
-                      >
-                        <td className="px-4 py-2.5 text-muted-foreground/60 tabular-nums">
-                          {m.kickoffTs ? fmtTime(m.kickoffTs) : "—"}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-foreground font-medium">{m.homeTeam}</span>
-                            <span className="text-muted-foreground/40 text-[10px]">vs</span>
-                            <span className="text-foreground font-medium">{m.awayTeam}</span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <div className="text-[10px] text-muted-foreground/60 truncate max-w-[160px]">
-                            {m.countryName} — {m.leagueName}
-                          </div>
-                        </td>
-                        <td className="px-4 py-2.5 tabular-nums font-bold">
-                          {m.homeScore !== null && m.awayScore !== null
-                            ? <span className="text-primary/80">{m.homeScore} – {m.awayScore}</span>
-                            : <span className="text-muted-foreground/30">—</span>
-                          }
-                        </td>
-                        <DataPip ok={statsOk} />
-                        <DataPip ok={playerOk} />
-                        <DataPip ok={m.hasPo1x2} />
-                        <DataPip ok={m.hasPoOU} />
-                        <DataPip ok={m.hasPoAH} />
-                        <td className="px-2 py-2.5 text-center">
-                          {allOddsCount > 0
-                            ? <span className="text-[9px] text-primary/70">{allOddsCount}/3+</span>
-                            : <span className="text-[9px] text-muted-foreground/30">—</span>
-                          }
-                        </td>
-                      </motion.tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
       </div>
     </div>
-  );
-}
-
-function DataPip({ ok }: { ok: boolean }) {
-  return (
-    <td className="px-2 py-2.5 text-center">
-      <span className={`inline-block w-1.5 h-1.5 rounded-full ${ok ? "bg-green-400" : "bg-border/40"}`} />
-    </td>
   );
 }

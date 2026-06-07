@@ -1,5 +1,9 @@
 import { Router } from "express";
-import { listMatches, countMatches, getMatch, deleteMatch, dbStats } from "../lib/db.js";
+import {
+  listAllMatchesForViewer, countAllMatchesForViewer,
+  getMatch, getProcessingMatchById,
+  deleteMatch, dbStats,
+} from "../lib/db.js";
 
 const router = Router();
 
@@ -8,77 +12,95 @@ router.get("/db/stats", (_req, res) => {
   res.json(dbStats());
 });
 
-/** GET /api/db/matches — paginated match list */
+/** GET /api/db/matches — paginated match list (union of stored + processing) */
 router.get("/db/matches", (req, res) => {
   const limit  = Math.min(parseInt(String(req.query["limit"]  ?? "50")), 200);
   const offset = Math.max(parseInt(String(req.query["offset"] ?? "0")),  0);
-  const jobId          = req.query["jobId"]          as string | undefined;
-  const oddsPortalPath = req.query["oddsPortalPath"] as string | undefined;
-  const year = req.query["year"] ? parseInt(String(req.query["year"])) : undefined;
 
-  const opts = { limit, offset, jobId, oddsPortalPath, year };
-  const matches = listMatches(opts);
-  const total   = countMatches({ jobId, oddsPortalPath, year });
+  const matches = listAllMatchesForViewer({ limit, offset });
+  const total   = countAllMatchesForViewer();
 
   res.json({
     total,
     limit,
     offset,
     matches: matches.map(m => ({
-      id:             m.id,
-      jobId:          m.job_id,
-      leagueName:     m.league_name,
-      countryName:    m.country_name,
-      oddsPortalPath: m.odds_portal_path,
-      year:           m.year,
-      date:           m.match_date,
-      homeTeam:       m.home_team,
-      awayTeam:       m.away_team,
-      homeScore:      m.home_score,
-      awayScore:      m.away_score,
-      hasHomeStats:   !!m.home_stats_json,
-      hasAwayStats:   !!m.away_stats_json,
-      has1x2:         !!m.odds_1x2_json,
-      hasOU:          !!m.odds_ou_json,
-      hasAH:          !!m.odds_ah_json,
-      hasBTTS:        !!m.odds_btts_json,
-      hasDC:          !!m.odds_dc_json,
-      hasCS:          !!m.odds_cs_json,
-      hasHTFT:        !!m.odds_htft_json,
-      createdAt:      m.created_at,
+      id:           m.id,
+      source:       m.source,
+      leagueName:   m.league_name ?? "",
+      countryName:  m.country_name ?? "",
+      date:         m.date,
+      homeTeam:     m.home_team,
+      awayTeam:     m.away_team,
+      homeScore:    m.home_score,
+      awayScore:    m.away_score,
+      hasHomeStats: !!m.has_stats,
+      hasAwayStats: !!m.has_stats,
+      hasPlayer:    !!m.has_player,
+      hasOdds:      !!m.has_odds,
+      createdAt:    m.created_at,
     })),
   });
 });
 
-/** GET /api/db/match/:id — full match detail including all JSON blobs */
+/** GET /api/db/match/:id — full match detail; supports both stored (match_) and processing (pm_) IDs */
 router.get("/db/match/:id", (req, res) => {
-  const m = getMatch(req.params.id);
-  if (!m) {
-    res.status(404).json({ error: "Match not found" });
-    return;
-  }
-
+  const id = req.params.id;
   const parseJson = (s: string | null) => {
     if (!s) return null;
     try { return JSON.parse(s); } catch { return null; }
   };
 
+  if (id.startsWith("pm_")) {
+    const m = getProcessingMatchById(id);
+    if (!m) { res.status(404).json({ error: "Match not found" }); return; }
+    res.json({
+      id:              m.id,
+      source:          "processing",
+      leagueName:      m.league_name ?? "",
+      countryName:     m.country_name ?? "",
+      date:            m.date,
+      homeTeam:        m.home_team,
+      awayTeam:        m.away_team,
+      homeScore:       m.home_score,
+      awayScore:       m.away_score,
+      homeStats:       parseJson(m.home_team_stats_json),
+      awayStats:       parseJson(m.away_team_stats_json),
+      homePlayerStats: parseJson(m.home_player_stats_json),
+      awayPlayerStats: parseJson(m.away_player_stats_json),
+      odds: {
+        "1x2":  parseJson(m.po_1x2_json),
+        "ou":   parseJson(m.po_ou_json),
+        "ah":   parseJson(m.po_ah_json),
+        "btts": parseJson(m.po_btts_json),
+        "dc":   parseJson(m.po_dc_json),
+        "eh":   parseJson(m.po_eh_json),
+        "dnb":  parseJson(m.po_dnb_json),
+        "cs":   parseJson(m.po_cs_json),
+        "htft": parseJson(m.po_htft_json),
+        "oe":   parseJson(m.po_oe_json),
+      },
+      createdAt: m.created_at,
+    });
+    return;
+  }
+
+  const m = getMatch(id);
+  if (!m) { res.status(404).json({ error: "Match not found" }); return; }
   res.json({
-    id:             m.id,
-    jobId:          m.job_id,
-    leagueName:     m.league_name,
-    countryName:    m.country_name,
-    oddsPortalPath: m.odds_portal_path,
-    year:           m.year,
-    date:           m.match_date,
-    homeTeam:       m.home_team,
-    awayTeam:       m.away_team,
-    homeScore:      m.home_score,
-    awayScore:      m.away_score,
-    homeTeamId:     m.home_team_id,
-    awayTeamId:     m.away_team_id,
-    homeStats:      parseJson(m.home_stats_json),
-    awayStats:      parseJson(m.away_stats_json),
+    id:              m.id,
+    source:          "stored",
+    leagueName:      m.league_name,
+    countryName:     m.country_name,
+    date:            m.match_date,
+    homeTeam:        m.home_team,
+    awayTeam:        m.away_team,
+    homeScore:       m.home_score,
+    awayScore:       m.away_score,
+    homeStats:       parseJson(m.home_stats_json),
+    awayStats:       parseJson(m.away_stats_json),
+    homePlayerStats: null,
+    awayPlayerStats: null,
     odds: {
       "1x2":  parseJson(m.odds_1x2_json),
       "ou":   parseJson(m.odds_ou_json),
@@ -95,13 +117,10 @@ router.get("/db/match/:id", (req, res) => {
   });
 });
 
-/** DELETE /api/db/match/:id — remove a single stored match */
+/** DELETE /api/db/match/:id — remove a single stored match (processing matches not deletable via this route) */
 router.delete("/db/match/:id", (req, res) => {
   const m = getMatch(req.params.id);
-  if (!m) {
-    res.status(404).json({ error: "Match not found" });
-    return;
-  }
+  if (!m) { res.status(404).json({ error: "Match not found" }); return; }
   deleteMatch(req.params.id);
   res.json({ deleted: true });
 });
