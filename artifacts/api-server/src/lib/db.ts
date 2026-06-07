@@ -76,6 +76,58 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_sm_job    ON stored_matches(job_id);
     CREATE INDEX IF NOT EXISTS idx_sm_league ON stored_matches(odds_portal_path, year);
     CREATE INDEX IF NOT EXISTS idx_sm_date   ON stored_matches(match_date);
+
+    CREATE TABLE IF NOT EXISTS processing_jobs (
+      id              TEXT PRIMARY KEY,
+      date            TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'pending',
+      total_matches   INTEGER DEFAULT 0,
+      processed       INTEGER DEFAULT 0,
+      stored          INTEGER DEFAULT 0,
+      current_match   TEXT,
+      log_json        TEXT DEFAULT '[]',
+      error_message   TEXT,
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_pj_date ON processing_jobs(date);
+
+    CREATE TABLE IF NOT EXISTS processing_matches (
+      id                       TEXT PRIMARY KEY,
+      job_id                   TEXT NOT NULL,
+      date                     TEXT NOT NULL,
+      home_team                TEXT NOT NULL,
+      away_team                TEXT NOT NULL,
+      home_team_id             INTEGER,
+      away_team_id             INTEGER,
+      league_name              TEXT,
+      league_id                INTEGER,
+      country_name             TEXT,
+      country_flag             TEXT,
+      kickoff_ts               INTEGER,
+      home_score               INTEGER,
+      away_score               INTEGER,
+      status                   TEXT,
+      home_team_stats_json     TEXT,
+      away_team_stats_json     TEXT,
+      home_player_stats_json   TEXT,
+      away_player_stats_json   TEXT,
+      po_1x2_json              TEXT,
+      po_ou_json               TEXT,
+      po_ah_json               TEXT,
+      po_btts_json             TEXT,
+      po_dc_json               TEXT,
+      po_dnb_json              TEXT,
+      po_cs_json               TEXT,
+      po_eh_json               TEXT,
+      po_htft_json             TEXT,
+      po_oe_json               TEXT,
+      po_wtbh_json             TEXT,
+      created_at               INTEGER NOT NULL,
+      FOREIGN KEY (job_id) REFERENCES processing_jobs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pm_job  ON processing_matches(job_id);
+    CREATE INDEX IF NOT EXISTS idx_pm_date ON processing_matches(date);
   `);
 }
 
@@ -249,4 +301,159 @@ export function dbStats() {
   const withOdds  = db.prepare("SELECT COUNT(*) as n FROM stored_matches WHERE odds_1x2_json IS NOT NULL").get() as { n: number };
   const leagues = db.prepare("SELECT DISTINCT odds_portal_path, league_name, country_name FROM stored_matches ORDER BY league_name").all() as {odds_portal_path: string; league_name: string; country_name: string}[];
   return { jobs: jobs.n, matches: matches.n, withStats: withStats.n, withOdds: withOdds.n, leagues };
+}
+
+// ── Processing Job helpers ────────────────────────────────────────────────────
+
+export interface ProcessingJob {
+  id: string;
+  date: string;
+  status: "pending" | "running" | "complete" | "failed";
+  total_matches: number;
+  processed: number;
+  stored: number;
+  current_match: string | null;
+  log_json: string;
+  error_message: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export function createProcessingJob(params: { date: string }): ProcessingJob {
+  const db = getDb();
+  const id = `pjob_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO processing_jobs (id, date, status, created_at, updated_at)
+    VALUES (?, ?, 'pending', ?, ?)
+  `).run(id, params.date, now, now);
+  return getProcessingJob(id)!;
+}
+
+export function getProcessingJob(id: string): ProcessingJob | null {
+  return getDb().prepare("SELECT * FROM processing_jobs WHERE id = ?").get(id) as ProcessingJob | null;
+}
+
+export function listProcessingJobs(): ProcessingJob[] {
+  return getDb().prepare("SELECT * FROM processing_jobs ORDER BY created_at DESC LIMIT 100").all() as ProcessingJob[];
+}
+
+export function updateProcessingJob(id: string, patch: Partial<Omit<ProcessingJob, "id" | "created_at">>) {
+  const db = getDb();
+  const now = Date.now();
+  const fields = Object.entries({ ...patch, updated_at: now });
+  const setClauses = fields.map(([k]) => `${k} = ?`).join(", ");
+  const values = fields.map(([, v]) => v);
+  db.prepare(`UPDATE processing_jobs SET ${setClauses} WHERE id = ?`).run(...values, id);
+}
+
+export function appendProcessingLog(id: string, entry: string) {
+  const db = getDb();
+  const job = db.prepare("SELECT log_json FROM processing_jobs WHERE id = ?").get(id) as { log_json: string } | null;
+  if (!job) return;
+  let logs: string[] = [];
+  try { logs = JSON.parse(job.log_json || "[]"); } catch {}
+  logs.push(`[${new Date().toISOString().slice(11, 19)}] ${entry}`);
+  if (logs.length > 500) logs = logs.slice(-500);
+  db.prepare("UPDATE processing_jobs SET log_json = ?, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(logs), Date.now(), id);
+}
+
+export function deleteProcessingJob(id: string) {
+  const db = getDb();
+  db.prepare("DELETE FROM processing_matches WHERE job_id = ?").run(id);
+  db.prepare("DELETE FROM processing_jobs WHERE id = ?").run(id);
+}
+
+// ── Processing Match helpers ──────────────────────────────────────────────────
+
+export interface ProcessingMatch {
+  id: string;
+  job_id: string;
+  date: string;
+  home_team: string;
+  away_team: string;
+  home_team_id: number | null;
+  away_team_id: number | null;
+  league_name: string | null;
+  league_id: number | null;
+  country_name: string | null;
+  country_flag: string | null;
+  kickoff_ts: number | null;
+  home_score: number | null;
+  away_score: number | null;
+  status: string | null;
+  home_team_stats_json: string | null;
+  away_team_stats_json: string | null;
+  home_player_stats_json: string | null;
+  away_player_stats_json: string | null;
+  po_1x2_json: string | null;
+  po_ou_json: string | null;
+  po_ah_json: string | null;
+  po_btts_json: string | null;
+  po_dc_json: string | null;
+  po_dnb_json: string | null;
+  po_cs_json: string | null;
+  po_eh_json: string | null;
+  po_htft_json: string | null;
+  po_oe_json: string | null;
+  po_wtbh_json: string | null;
+  created_at: number;
+}
+
+export function insertProcessingMatch(m: Omit<ProcessingMatch, "id" | "created_at">): string {
+  const db = getDb();
+  const id = `pm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const now = Date.now();
+  db.prepare(`
+    INSERT OR REPLACE INTO processing_matches
+    (id, job_id, date, home_team, away_team, home_team_id, away_team_id,
+     league_name, league_id, country_name, country_flag, kickoff_ts,
+     home_score, away_score, status,
+     home_team_stats_json, away_team_stats_json,
+     home_player_stats_json, away_player_stats_json,
+     po_1x2_json, po_ou_json, po_ah_json, po_btts_json,
+     po_dc_json, po_dnb_json, po_cs_json, po_eh_json,
+     po_htft_json, po_oe_json, po_wtbh_json, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    id, m.job_id, m.date, m.home_team, m.away_team,
+    m.home_team_id ?? null, m.away_team_id ?? null,
+    m.league_name ?? null, m.league_id ?? null,
+    m.country_name ?? null, m.country_flag ?? null,
+    m.kickoff_ts ?? null,
+    m.home_score ?? null, m.away_score ?? null, m.status ?? null,
+    m.home_team_stats_json ?? null, m.away_team_stats_json ?? null,
+    m.home_player_stats_json ?? null, m.away_player_stats_json ?? null,
+    m.po_1x2_json ?? null, m.po_ou_json ?? null, m.po_ah_json ?? null,
+    m.po_btts_json ?? null, m.po_dc_json ?? null, m.po_dnb_json ?? null,
+    m.po_cs_json ?? null, m.po_eh_json ?? null,
+    m.po_htft_json ?? null, m.po_oe_json ?? null, m.po_wtbh_json ?? null,
+    now
+  );
+  return id;
+}
+
+export function listProcessingMatches(opts: { date?: string; jobId?: string; limit?: number; offset?: number }): ProcessingMatch[] {
+  const db = getDb();
+  const wheres: string[] = [];
+  const params: unknown[] = [];
+  if (opts.date)  { wheres.push("date = ?");   params.push(opts.date); }
+  if (opts.jobId) { wheres.push("job_id = ?"); params.push(opts.jobId); }
+  const where = wheres.length ? `WHERE ${wheres.join(" AND ")}` : "";
+  params.push(opts.limit ?? 200, opts.offset ?? 0);
+  return db.prepare(
+    `SELECT * FROM processing_matches ${where} ORDER BY kickoff_ts ASC, home_team ASC LIMIT ? OFFSET ?`
+  ).all(...params) as ProcessingMatch[];
+}
+
+export function getProcessingDbStats() {
+  const db = getDb();
+  const jobs    = db.prepare("SELECT COUNT(*) as n FROM processing_jobs").get() as { n: number };
+  const matches = db.prepare("SELECT COUNT(*) as n FROM processing_matches").get() as { n: number };
+  const withStats = db.prepare("SELECT COUNT(*) as n FROM processing_matches WHERE home_team_stats_json IS NOT NULL").get() as { n: number };
+  const withOdds  = db.prepare("SELECT COUNT(*) as n FROM processing_matches WHERE po_1x2_json IS NOT NULL").get() as { n: number };
+  const withPlayer = db.prepare("SELECT COUNT(*) as n FROM processing_matches WHERE home_player_stats_json IS NOT NULL").get() as { n: number };
+  const dates = db.prepare("SELECT DISTINCT date FROM processing_matches ORDER BY date DESC LIMIT 30").all() as { date: string }[];
+  return { jobs: jobs.n, matches: matches.n, withStats: withStats.n, withOdds: withOdds.n, withPlayer: withPlayer.n, dates: dates.map(d => d.date) };
 }

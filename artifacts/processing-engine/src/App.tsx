@@ -6,6 +6,7 @@ import NotFound from "@/pages/not-found";
 import Home from "@/pages/home";
 import FixtureDetail from "@/pages/fixture-detail";
 import DatabasePage from "@/pages/database";
+import ProcessingPage from "@/pages/processing";
 
 const queryClient = new QueryClient();
 
@@ -15,6 +16,7 @@ function Router() {
       <Route path="/" component={Home} />
       <Route path="/fixture/:id" component={FixtureDetail} />
       <Route path="/database" component={DatabasePage} />
+      <Route path="/processing" component={ProcessingPage} />
       <Route component={NotFound} />
     </Switch>
   );
