@@ -97,8 +97,19 @@ interface SHTeamStats {
 
 interface OddsEntry {
   bookmaker: string;
-  odds: Record<string, number>;
+  odds: (number | null)[];
+  line?: number;
 }
+
+// Per-market column header labels (positional, matching BEBookmakerEntry.odds array order)
+const MARKET_COLS: Record<string, string[]> = {
+  "1x2":  ["1",    "X",     "2"],
+  ou:     ["Over", "Under"],
+  ah:     ["1",    "2"],
+  dnb:    ["1",    "2"],
+  dc:     ["1X",   "12",    "X2"],
+  btts:   ["Yes",  "No"],
+};
 
 // ── Helper: result badge ──────────────────────────────────────────────────────
 
@@ -363,9 +374,8 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
   const activeMarketData = match
     ? ((match.odds as Record<string, unknown>)[selectedMarket] as OddsEntry[] | null)
     : null;
-  const oddsColKeys = activeMarketData
-    ? [...new Set(activeMarketData.flatMap(e => Object.keys(e.odds)))]
-    : [];
+  const oddsColLabels = MARKET_COLS[selectedMarket] ?? [];
+  const hasLine = selectedMarket === "ou" || selectedMarket === "ah";
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
@@ -472,9 +482,14 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
                               <th className="text-left px-4 py-2 text-muted-foreground/60 font-normal w-48">
                                 Bookmaker
                               </th>
-                              {oddsColKeys.map(k => (
-                                <th key={k} className="text-center px-3 py-2 text-muted-foreground/60 font-normal uppercase min-w-[64px]">
-                                  {k}
+                              {hasLine && (
+                                <th className="text-center px-3 py-2 text-muted-foreground/40 font-normal min-w-[64px]">
+                                  {selectedMarket === "ah" ? "Handicap" : "Line"}
+                                </th>
+                              )}
+                              {oddsColLabels.map(label => (
+                                <th key={label} className="text-center px-3 py-2 text-muted-foreground/60 font-normal uppercase min-w-[64px]">
+                                  {label}
                                 </th>
                               ))}
                             </tr>
@@ -490,11 +505,19 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
                                   )}
                                   {e.bookmaker}
                                 </td>
-                                {oddsColKeys.map(k => (
-                                  <td key={k} className="text-center px-3 py-2 text-primary/90 font-bold tabular-nums">
-                                    {e.odds[k] != null ? e.odds[k].toFixed(2) : <span className="text-muted-foreground/30">—</span>}
+                                {hasLine && (
+                                  <td className="text-center px-3 py-2 text-muted-foreground/50 tabular-nums">
+                                    {e.line != null ? e.line : "—"}
                                   </td>
-                                ))}
+                                )}
+                                {oddsColLabels.map((label, idx) => {
+                                  const val = e.odds[idx];
+                                  return (
+                                    <td key={label} className="text-center px-3 py-2 text-primary/90 font-bold tabular-nums">
+                                      {val != null ? val.toFixed(2) : <span className="text-muted-foreground/30">—</span>}
+                                    </td>
+                                  );
+                                })}
                               </tr>
                             ))}
                           </tbody>
