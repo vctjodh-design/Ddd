@@ -1,6 +1,9 @@
 import { Router } from "express";
 import { trainModel, predictMatch, predictByTeams, modelStatus } from "../lib/mlModel.js";
 import { getProcessingMatchById, getDb } from "../lib/db.js";
+import { fetchStatsHubTeamHistory } from "../lib/statsHub.js";
+import { fetchPlayerStats } from "../lib/processingJob.js";
+import { fetchBetExplorerMatches, fetchKeyMarketsLive, findBestBEMatch } from "../lib/betExplorer.js";
 
 const router = Router();
 
@@ -35,6 +38,69 @@ router.post("/model/predict", (req, res) => {
   try {
     const prediction = predictMatch(row as Parameters<typeof predictMatch>[0]);
     res.json(prediction);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/**
+ * Live prediction: scrape StatsHub + BetExplorer on-demand, then predict.
+ * Checks the DB first (fast path). Falls back to live scraping if not found.
+ */
+router.post("/model/predict-live", async (req, res) => {
+  const { homeTeamId, awayTeamId, homeTeam, awayTeam, kickoffTs } = req.body as {
+    homeTeamId?: number; awayTeamId?: number;
+    homeTeam?: string; awayTeam?: string; kickoffTs?: number;
+  };
+  if (!homeTeamId || !awayTeamId || !homeTeam || !awayTeam || !kickoffTs) {
+    return void res.status(400).json({ error: "homeTeamId, awayTeamId, homeTeam, awayTeam, kickoffTs required" });
+  }
+
+  // Fast path: already processed
+  const dbPred = predictByTeams(homeTeam, awayTeam, kickoffTs);
+  if (dbPred) return void res.json({ ...dbPred, source: "db" });
+
+  // Live scrape — fetch team stats, player stats, and BetExplorer results in parallel
+  try {
+    const dateStr = new Date(kickoffTs * 1000).toISOString().slice(0, 10);
+    const [homeStats, awayStats, homePlayers, awayPlayers, beMatches] = await Promise.allSettled([
+      fetchStatsHubTeamHistory(homeTeamId, kickoffTs),
+      fetchStatsHubTeamHistory(awayTeamId, kickoffTs),
+      fetchPlayerStats(homeTeamId),
+      fetchPlayerStats(awayTeamId),
+      fetchBetExplorerMatches(dateStr),
+    ]);
+
+    const matchLike: Record<string, string | null> = {
+      home_team_stats_json: homeStats.status === "fulfilled" && homeStats.value ? JSON.stringify(homeStats.value) : null,
+      away_team_stats_json: awayStats.status === "fulfilled" && awayStats.value ? JSON.stringify(awayStats.value) : null,
+      home_player_stats_json: homePlayers.status === "fulfilled" && homePlayers.value.length ? JSON.stringify(homePlayers.value) : null,
+      away_player_stats_json: awayPlayers.status === "fulfilled" && awayPlayers.value.length ? JSON.stringify(awayPlayers.value) : null,
+      po_1x2_json: null, po_btts_json: null, po_ou_json: null, po_dc_json: null,
+    };
+
+    // Try BetExplorer odds — fast concurrent fetch (no delays, no retry)
+    if (beMatches.status === "fulfilled") {
+      const beMatch = findBestBEMatch(homeTeam, awayTeam, beMatches.value);
+      if (beMatch) {
+        // Seed best 1x2 from results page immediately
+        matchLike.po_1x2_json = JSON.stringify([{
+          bookmaker: "best",
+          odds: [beMatch.bestHomeOdds, beMatch.bestDrawOdds, beMatch.bestAwayOdds],
+        }]);
+        // Concurrently fetch per-bookmaker markets (no delays — may 429, that's OK)
+        try {
+          const markets = await fetchKeyMarketsLive(beMatch.matchId, beMatch.matchUrl);
+          if (markets["1x2"]?.length) matchLike.po_1x2_json = JSON.stringify(markets["1x2"]);
+          if (markets.btts?.length)    matchLike.po_btts_json = JSON.stringify(markets.btts);
+          if (markets.ou?.length)      matchLike.po_ou_json   = JSON.stringify(markets.ou);
+          if (markets.dc?.length)      matchLike.po_dc_json   = JSON.stringify(markets.dc);
+        } catch { /* leave with results-page best odds */ }
+      }
+    }
+
+    const prediction = predictMatch(matchLike as Parameters<typeof predictMatch>[0]);
+    res.json({ ...prediction, source: "live" });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

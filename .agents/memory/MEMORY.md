@@ -2,3 +2,4 @@
 - [Bulk upload pipeline](bulk-upload-pipeline.md) — OddsPortal scraper + StatsHub + SQLite; key files and constraints documented.
 - [BetExplorer scraper](betexplorer-scraper.md) — plain HTTP odds scraper; API codes, endpoint format, line parsing, and rate-limit strategy documented.
 - [ML prediction system](ml-prediction.md) — RF+Poisson ensemble; field aliasing for both stored_matches and processing_matches; value-bet threshold 4%.
+- [API server workflow health check](api-server-workflow.md) — must use `exec env PORT=... node ...` in dev script so Replit detects port opening; pre-build dist before restarting.

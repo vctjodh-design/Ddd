@@ -931,9 +931,13 @@ function ProbBar({ label, modelPct, impliedPct, odds }: { label: string; modelPc
   );
 }
 
-function FixturePredictionPanel({ homeTeam, awayTeam, kickoffTs }: { homeTeam: string; awayTeam: string; kickoffTs: number }) {
+function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, kickoffTs }: {
+  homeTeamId: number; awayTeamId: number;
+  homeTeam: string; awayTeam: string; kickoffTs: number;
+}) {
   const [pred, setPred] = useState<FixturePrediction | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState("Predicting…");
   const [err, setErr] = useState<string | null>(null);
   const [trained, setTrained] = useState<boolean | null>(null);
 
@@ -946,16 +950,17 @@ function FixturePredictionPanel({ homeTeam, awayTeam, kickoffTs }: { homeTeam: s
 
   const runPrediction = async () => {
     setLoading(true); setErr(null); setPred(null);
+    setLoadingMsg("Fetching live data…");
+    const msgTimer = setTimeout(() => setLoadingMsg("Scraping stats & odds…"), 5000);
     try {
-      const r = await fetch("/api/model/predict-by-teams", {
+      const r = await fetch("/api/model/predict-live", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ homeTeam, awayTeam, kickoffTs }),
+        body: JSON.stringify({ homeTeamId, awayTeamId, homeTeam, awayTeam, kickoffTs }),
       });
-      if (r.status === 404) { setErr("no_data"); return; }
       if (!r.ok) { setErr("error"); return; }
       setPred(await r.json());
-    } catch { setErr("error"); } finally { setLoading(false); }
+    } catch { setErr("error"); } finally { clearTimeout(msgTimer); setLoading(false); }
   };
 
   const imp = pred?.impliedProbs ?? {};
@@ -980,7 +985,7 @@ function FixturePredictionPanel({ homeTeam, awayTeam, kickoffTs }: { homeTeam: s
           className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase tracking-widest border border-primary/50 text-primary hover:bg-primary/10 transition-all disabled:opacity-40"
         >
           <Brain className={`w-3 h-3 ${loading ? "animate-pulse" : ""}`} />
-          {loading ? "Predicting…" : pred ? "Refresh" : "Run Prediction"}
+          {loading ? loadingMsg : pred ? "Refresh" : "Run Prediction"}
         </button>
       </div>
 
@@ -991,14 +996,6 @@ function FixturePredictionPanel({ homeTeam, awayTeam, kickoffTs }: { homeTeam: s
         </div>
       )}
 
-      {/* No data error */}
-      {err === "no_data" && (
-        <div className="text-[11px] font-mono text-muted-foreground/60 border border-border/30 bg-card/20 p-4 text-center">
-          <Brain className="w-6 h-6 mx-auto mb-2 text-muted-foreground/30" />
-          This match hasn't been processed yet.<br />
-          <span className="text-muted-foreground/40">Process it from the home page first, then predictions will be available.</span>
-        </div>
-      )}
       {err === "error" && (
         <div className="text-[11px] font-mono text-destructive/70 border border-destructive/20 p-3">
           Prediction failed — check the server logs.
@@ -1242,9 +1239,11 @@ export default function FixtureDetail() {
               <motion.div key="predictions" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                 className="border border-border/30 bg-card/20 min-h-[400px] flex flex-col">
                 <FixturePredictionPanel
-                  homeTeam={fixture.homeTeam.name}
-                  awayTeam={fixture.awayTeam.name}
-                  kickoffTs={fixture.kickoffTimestamp}
+                  homeTeamId={(fixture.homeTeam as { id: number }).id}
+                  awayTeamId={(fixture.awayTeam as { id: number }).id}
+                  homeTeam={(fixture.homeTeam as { name: string }).name}
+                  awayTeam={(fixture.awayTeam as { name: string }).name}
+                  kickoffTs={fixture.kickoffTimestamp as number}
                 />
               </motion.div>
             ) : (

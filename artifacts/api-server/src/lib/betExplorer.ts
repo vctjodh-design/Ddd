@@ -267,6 +267,33 @@ export async function fetchMatchMarkets(
   return result;
 }
 
+/**
+ * Fetch key markets (1x2, ou, btts, dc) concurrently with no delays or retries.
+ * Used for live/on-demand predictions where speed matters more than completeness.
+ * Returns partial results — missing markets are simply absent from the output.
+ */
+export async function fetchKeyMarketsLive(
+  matchId: string,
+  matchUrl: string,
+): Promise<Partial<BEMatchMarkets>> {
+  const result: Partial<BEMatchMarkets> = {};
+  await Promise.all([
+    fetchMarketOnce(matchId, matchUrl, "1x2", false)
+      .then(({ entries }) => { if (entries.length) result["1x2"] = entries; })
+      .catch(() => {}),
+    fetchMarketOnce(matchId, matchUrl, "ou", true)
+      .then(({ entries }) => { if (entries.length) result.ou = entries; })
+      .catch(() => {}),
+    fetchMarketOnce(matchId, matchUrl, "bts", false)
+      .then(({ entries }) => { if (entries.length) result.btts = entries; })
+      .catch(() => {}),
+    fetchMarketOnce(matchId, matchUrl, "dc", false)
+      .then(({ entries }) => { if (entries.length) result.dc = entries; })
+      .catch(() => {}),
+  ]);
+  return result;
+}
+
 // ── Results page fetch ─────────────────────────────────────────────────────────
 
 function parseResultsHtml(html: string, targetDate: string): BEMatch[] {

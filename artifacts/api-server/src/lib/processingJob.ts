@@ -214,7 +214,7 @@ function parsePlayer(p: RawPlayer) {
   };
 }
 
-async function fetchPlayerStats(teamId: number): Promise<unknown[]> {
+export async function fetchPlayerStats(teamId: number): Promise<unknown[]> {
   try {
     const resp = await fetch(
       `${SH_BASE}/api/team/${teamId}/last-games?page=1&limit=10`,
