@@ -612,3 +612,57 @@ export function modelStatus() {
     trainedAt: s?.trainedAt ?? 0,
   };
 }
+
+/**
+ * Look up a match by fuzzy team-name match + kickoff timestamp, then predict.
+ * Checks processing_matches first (exact date), then stored_matches (match_date).
+ */
+export function predictByTeams(homeTeam: string, awayTeam: string, kickoffTs: number): PredictionOutput | null {
+  const db = getDb();
+
+  // Normalise: lowercase, strip punctuation for comparison
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  const hn = norm(homeTeam);
+  const an = norm(awayTeam);
+
+  // 1) processing_matches — match by date (YYYY-MM-DD) from kickoffTs
+  const dateStr = new Date(kickoffTs * 1000).toISOString().slice(0, 10);
+  const pmRows = db.prepare(
+    "SELECT * FROM processing_matches WHERE date = ? ORDER BY created_at DESC"
+  ).all(dateStr) as Record<string, unknown>[];
+
+  const pmRow = pmRows.find(r => {
+    return norm(String(r.home_team ?? "")).includes(hn.split(" ")[0]) &&
+           norm(String(r.away_team ?? "")).includes(an.split(" ")[0]);
+  }) ?? null;
+
+  if (pmRow) return predictMatch(pmRow as MatchLike);
+
+  // 2) stored_matches — match_date is YYYY-MM-DD
+  const smRows = db.prepare(
+    "SELECT * FROM stored_matches WHERE match_date = ? ORDER BY id DESC"
+  ).all(dateStr) as Record<string, unknown>[];
+
+  const smRow = smRows.find(r => {
+    return norm(String(r.home_team ?? "")).includes(hn.split(" ")[0]) &&
+           norm(String(r.away_team ?? "")).includes(an.split(" ")[0]);
+  }) ?? null;
+
+  if (smRow) return predictMatch(smRow as MatchLike);
+
+  // 3) Try ±1 day window for timezone edge cases (processing_matches)
+  const dayBefore = new Date((kickoffTs - 86400) * 1000).toISOString().slice(0, 10);
+  const dayAfter  = new Date((kickoffTs + 86400) * 1000).toISOString().slice(0, 10);
+  for (const d of [dayBefore, dayAfter]) {
+    const rows = db.prepare(
+      "SELECT * FROM processing_matches WHERE date = ? ORDER BY created_at DESC"
+    ).all(d) as Record<string, unknown>[];
+    const row = rows.find(r =>
+      norm(String(r.home_team ?? "")).includes(hn.split(" ")[0]) &&
+      norm(String(r.away_team ?? "")).includes(an.split(" ")[0])
+    ) ?? null;
+    if (row) return predictMatch(row as MatchLike);
+  }
+
+  return null;
+}

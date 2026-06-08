@@ -2,7 +2,7 @@ import React, { useState, useRef } from "react";
 import { useParams, useLocation } from "wouter";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Activity, ChevronLeft, ChevronRight, Lock } from "lucide-react";
+import { ArrowLeft, Activity, ChevronLeft, ChevronRight, Lock, Brain, Star, TrendingUp, Zap } from "lucide-react";
 import { useGetFixtureDetail } from "@workspace/api-client-react";
 import PlayerAnalysisPanel from "@/components/PlayerAnalysisPanel";
 import BettingOddsPanel from "@/components/BettingOddsPanel";
@@ -874,12 +874,251 @@ function ComparePanel({ home, away, fixture }: {
   );
 }
 
+// ─── Prediction types ─────────────────────────────────────────────────────────
+
+interface ProbMap { H: number; D: number; A: number }
+interface Prob2 { yes: number; no: number }
+interface ScoreProb { home: number; away: number; prob: number }
+interface ValueBet { market: string; outcome: string; modelProb: number; impliedProb: number; edge: number; bestOdds: number }
+interface CornerPred { predicted: number; over85: number; over95: number; over105: number }
+interface BestOdds { H?: number; D?: number; A?: number; yes?: number; no?: number; "1X"?: number; "12"?: number; X2?: number }
+interface FixturePrediction {
+  method: string; featureQuality: string;
+  onex2: ProbMap; dc: { "1X": number; "12": number; X2: number };
+  btts: Prob2; corners: CornerPred;
+  correctScores: ScoreProb[]; valueBets: ValueBet[];
+  lambdaHome: number; lambdaAway: number;
+  bestOdds: BestOdds;
+  impliedProbs: { H?: number; D?: number; A?: number; yes?: number; no?: number };
+}
+
+// ─── Fixture Prediction Panel ─────────────────────────────────────────────────
+
+function ProbBar({ label, modelPct, impliedPct, odds }: { label: string; modelPct: number; impliedPct: number; odds?: number }) {
+  const edge = modelPct - impliedPct;
+  const isValue = edge > 4;
+  return (
+    <div className={`p-3 border rounded-sm ${isValue ? "border-amber-500/40 bg-amber-500/5" : "border-border/30 bg-card/20"}`}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] font-mono font-bold text-foreground/80">{label}</span>
+        <div className="flex items-center gap-2 text-[10px] font-mono">
+          {odds && <span className="text-muted-foreground/50">@{odds.toFixed(2)}</span>}
+          {isValue && <span className="text-amber-400 font-bold flex items-center gap-0.5"><Zap className="w-2.5 h-2.5" />VALUE</span>}
+        </div>
+      </div>
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] text-muted-foreground/50 w-12 shrink-0 uppercase tracking-wider">Model</span>
+          <div className="flex-1 h-1.5 bg-muted/20 overflow-hidden rounded-full">
+            <div className="h-full bg-primary/70 transition-all duration-500" style={{ width: `${Math.min(modelPct, 100)}%` }} />
+          </div>
+          <span className={`text-[10px] font-mono font-bold w-8 text-right ${isValue ? "text-amber-400" : "text-foreground"}`}>{modelPct.toFixed(0)}%</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] text-muted-foreground/50 w-12 shrink-0 uppercase tracking-wider">Implied</span>
+          <div className="flex-1 h-1.5 bg-muted/20 overflow-hidden rounded-full">
+            <div className="h-full bg-muted-foreground/40 transition-all duration-500" style={{ width: `${Math.min(impliedPct, 100)}%` }} />
+          </div>
+          <span className="text-[10px] font-mono text-muted-foreground/60 w-8 text-right">{impliedPct.toFixed(0)}%</span>
+        </div>
+      </div>
+      {isValue && (
+        <div className="mt-1.5 text-[9px] font-mono text-amber-400/70">
+          +{edge.toFixed(1)}% edge
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FixturePredictionPanel({ homeTeam, awayTeam, kickoffTs }: { homeTeam: string; awayTeam: string; kickoffTs: number }) {
+  const [pred, setPred] = useState<FixturePrediction | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [trained, setTrained] = useState<boolean | null>(null);
+
+  React.useEffect(() => {
+    fetch("/api/model/status")
+      .then(r => r.json())
+      .then(s => setTrained(s.trained))
+      .catch(() => setTrained(false));
+  }, []);
+
+  const runPrediction = async () => {
+    setLoading(true); setErr(null); setPred(null);
+    try {
+      const r = await fetch("/api/model/predict-by-teams", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ homeTeam, awayTeam, kickoffTs }),
+      });
+      if (r.status === 404) { setErr("no_data"); return; }
+      if (!r.ok) { setErr("error"); return; }
+      setPred(await r.json());
+    } catch { setErr("error"); } finally { setLoading(false); }
+  };
+
+  const imp = pred?.impliedProbs ?? {};
+  const bo  = pred?.bestOdds ?? {};
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4 space-y-4" style={{ scrollbarWidth: "thin" }}>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Brain className="w-4 h-4 text-primary/60" />
+          <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/60">ML Predictions</span>
+          {pred && (
+            <span className="text-[9px] font-mono text-muted-foreground/40 border border-border/30 px-1.5 py-0.5">
+              {pred.method} · {pred.featureQuality}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={runPrediction}
+          disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-mono uppercase tracking-widest border border-primary/50 text-primary hover:bg-primary/10 transition-all disabled:opacity-40"
+        >
+          <Brain className={`w-3 h-3 ${loading ? "animate-pulse" : ""}`} />
+          {loading ? "Predicting…" : pred ? "Refresh" : "Run Prediction"}
+        </button>
+      </div>
+
+      {/* Not trained warning */}
+      {trained === false && (
+        <div className="text-[11px] font-mono text-amber-400/70 border border-amber-500/20 bg-amber-500/5 p-3">
+          ⚠ Model not trained yet — go to the Database page and click "Train Model" first.
+        </div>
+      )}
+
+      {/* No data error */}
+      {err === "no_data" && (
+        <div className="text-[11px] font-mono text-muted-foreground/60 border border-border/30 bg-card/20 p-4 text-center">
+          <Brain className="w-6 h-6 mx-auto mb-2 text-muted-foreground/30" />
+          This match hasn't been processed yet.<br />
+          <span className="text-muted-foreground/40">Process it from the home page first, then predictions will be available.</span>
+        </div>
+      )}
+      {err === "error" && (
+        <div className="text-[11px] font-mono text-destructive/70 border border-destructive/20 p-3">
+          Prediction failed — check the server logs.
+        </div>
+      )}
+
+      {/* Idle state */}
+      {!pred && !loading && !err && (
+        <div className="text-center py-10 text-muted-foreground/30">
+          <Brain className="w-10 h-10 mx-auto mb-3 opacity-30" />
+          <p className="text-[11px] font-mono uppercase tracking-widest">Click "Run Prediction" to generate probabilities</p>
+        </div>
+      )}
+
+      {/* Results */}
+      {pred && (
+        <>
+          {/* 1X2 */}
+          <div>
+            <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2 flex items-center gap-1.5">
+              <TrendingUp className="w-3 h-3" /> Match Result (1X2)
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <ProbBar label="Home Win" modelPct={pred.onex2.H * 100} impliedPct={(imp.H ?? 0) * 100} odds={bo.H} />
+              <ProbBar label="Draw"     modelPct={pred.onex2.D * 100} impliedPct={(imp.D ?? 0) * 100} odds={bo.D} />
+              <ProbBar label="Away Win" modelPct={pred.onex2.A * 100} impliedPct={(imp.A ?? 0) * 100} odds={bo.A} />
+            </div>
+          </div>
+
+          {/* BTTS */}
+          <div>
+            <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">Both Teams to Score</div>
+            <div className="grid grid-cols-2 gap-2">
+              <ProbBar label="BTTS Yes" modelPct={pred.btts.yes * 100} impliedPct={(imp.yes ?? 0) * 100} odds={bo.yes} />
+              <ProbBar label="BTTS No"  modelPct={pred.btts.no  * 100} impliedPct={(imp.no  ?? 0) * 100} odds={bo.no}  />
+            </div>
+          </div>
+
+          {/* Double Chance */}
+          <div>
+            <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">Double Chance</div>
+            <div className="grid grid-cols-3 gap-2">
+              <ProbBar label="1X" modelPct={pred.dc["1X"] * 100} impliedPct={0} odds={bo["1X"]} />
+              <ProbBar label="12" modelPct={pred.dc["12"] * 100} impliedPct={0} odds={bo["12"]} />
+              <ProbBar label="X2" modelPct={pred.dc["X2"] * 100} impliedPct={0} odds={bo["X2"]} />
+            </div>
+          </div>
+
+          {/* Corners */}
+          <div className="border border-border/30 bg-card/20 p-3">
+            <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-3">Total Corners</div>
+            <div className="grid grid-cols-4 gap-3">
+              {[
+                { label: "Predicted", value: pred.corners.predicted, unit: "" },
+                { label: "Over 8.5",  value: pred.corners.over85,    unit: "%" },
+                { label: "Over 9.5",  value: pred.corners.over95,    unit: "%" },
+                { label: "Over 10.5", value: pred.corners.over105,   unit: "%" },
+              ].map(({ label, value, unit }) => (
+                <div key={label} className="text-center">
+                  <div className="text-lg font-mono font-bold text-foreground">{value}{unit}</div>
+                  <div className="text-[9px] text-muted-foreground/50 uppercase tracking-wider">{label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Correct Score */}
+          <div>
+            <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">Most Likely Correct Scores</div>
+            <div className="grid grid-cols-5 gap-1.5">
+              {pred.correctScores.slice(0, 10).map(s => (
+                <div key={`${s.home}-${s.away}`}
+                  className="border border-border/30 bg-card/20 p-2 text-center">
+                  <div className="text-sm font-mono font-bold text-foreground">{s.home}–{s.away}</div>
+                  <div className="text-[9px] font-mono text-muted-foreground/50">{(s.prob * 100).toFixed(1)}%</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Value bets */}
+          {pred.valueBets.length > 0 && (
+            <div>
+              <div className="text-[10px] font-mono uppercase tracking-widest text-amber-400/70 mb-2 flex items-center gap-1.5">
+                <Star className="w-3 h-3" /> Value Bets Detected
+              </div>
+              <div className="space-y-1.5">
+                {pred.valueBets.map((v, i) => (
+                  <div key={i} className="flex items-center gap-3 border border-amber-500/20 bg-amber-500/5 p-2.5">
+                    <div className="flex-1">
+                      <span className="text-[11px] font-mono font-bold text-foreground/80">{v.market} {v.outcome}</span>
+                    </div>
+                    <div className="flex items-center gap-4 text-[10px] font-mono">
+                      <span className="text-muted-foreground/50">Model: {(v.modelProb * 100).toFixed(0)}%</span>
+                      <span className="text-muted-foreground/50">Implied: {(v.impliedProb * 100).toFixed(0)}%</span>
+                      <span className="text-amber-400 font-bold">+{(v.edge * 100).toFixed(1)}% edge</span>
+                      <span className="text-primary">@{v.bestOdds.toFixed(2)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Poisson lambdas */}
+          <div className="text-[9px] font-mono text-muted-foreground/30 border-t border-border/20 pt-2">
+            Poisson λ: Home {pred.lambdaHome.toFixed(2)} · Away {pred.lambdaAway.toFixed(2)}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function FixtureDetail() {
   const { id } = useParams<{ id: string }>();
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"home" | "away" | "compare" | "analysis" | "odds">("home");
+  const [activeTab, setActiveTab] = useState<"home" | "away" | "compare" | "analysis" | "odds" | "predictions">("home");
 
   const fixtureId = Number(id);
   const { data, isLoading, isError } = useGetFixtureDetail(fixtureId);
@@ -963,12 +1202,17 @@ export default function FixtureDetail() {
           </motion.div>
 
           <div className="flex gap-0 border-b border-border/50 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
-            {(["home", "away", "compare", "analysis", "odds"] as const).map(tab => (
+            {(["home", "away", "compare", "analysis", "odds", "predictions"] as const).map(tab => (
               <button key={tab} onClick={() => setActiveTab(tab)}
-                className={`px-4 py-2 text-xs font-mono uppercase tracking-widest border-b-2 transition-all -mb-px whitespace-nowrap flex-shrink-0 ${
+                className={`px-4 py-2 text-xs font-mono uppercase tracking-widest border-b-2 transition-all -mb-px whitespace-nowrap flex-shrink-0 flex items-center gap-1.5 ${
                   activeTab === tab ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}>
-                {tab === "home" ? fixture.homeTeam.name : tab === "away" ? fixture.awayTeam.name : tab === "compare" ? "Compare" : tab === "analysis" ? "⚡ Analysis" : "📊 Odds"}
+                {tab === "home" ? fixture.homeTeam.name
+                  : tab === "away" ? fixture.awayTeam.name
+                  : tab === "compare" ? "Compare"
+                  : tab === "analysis" ? "⚡ Analysis"
+                  : tab === "odds" ? "📊 Odds"
+                  : <><Brain className="w-3 h-3" />Predictions</>}
               </button>
             ))}
           </div>
@@ -993,6 +1237,15 @@ export default function FixtureDetail() {
             ) : activeTab === "odds" && home && away ? (
               <motion.div key="odds" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <BettingOddsPanel home={home} away={away} fixture={fixture} />
+              </motion.div>
+            ) : activeTab === "predictions" ? (
+              <motion.div key="predictions" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                className="border border-border/30 bg-card/20 min-h-[400px] flex flex-col">
+                <FixturePredictionPanel
+                  homeTeam={fixture.homeTeam.name}
+                  awayTeam={fixture.awayTeam.name}
+                  kickoffTs={fixture.kickoffTimestamp}
+                />
               </motion.div>
             ) : (
               <div className="flex items-center justify-center h-32">

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { trainModel, predictMatch, modelStatus } from "../lib/mlModel.js";
+import { trainModel, predictMatch, predictByTeams, modelStatus } from "../lib/mlModel.js";
 import { getProcessingMatchById, getDb } from "../lib/db.js";
 
 const router = Router();
@@ -34,6 +34,22 @@ router.post("/model/predict", (req, res) => {
 
   try {
     const prediction = predictMatch(row as Parameters<typeof predictMatch>[0]);
+    res.json(prediction);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.post("/model/predict-by-teams", (req, res) => {
+  const { homeTeam, awayTeam, kickoffTs } = req.body as {
+    homeTeam?: string; awayTeam?: string; kickoffTs?: number;
+  };
+  if (!homeTeam || !awayTeam || !kickoffTs) {
+    return void res.status(400).json({ error: "homeTeam, awayTeam, kickoffTs required" });
+  }
+  try {
+    const prediction = predictByTeams(homeTeam, awayTeam, kickoffTs);
+    if (!prediction) return void res.status(404).json({ error: "no_data" });
     res.json(prediction);
   } catch (err) {
     res.status(500).json({ error: String(err) });

@@ -1114,7 +1114,7 @@ const MARKETS: Array<[string, string]> = [
 function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () => void }) {
   const [match, setMatch] = useState<MatchDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"odds" | "stats" | "players" | "predictions">("odds");
+  const [tab, setTab] = useState<"odds" | "stats" | "players">("odds");
   const [selectedMarket, setSelectedMarket] = useState("1x2");
   const [playerView, setPlayerView] = useState<"summary" | "games">("summary");
 
@@ -1205,21 +1205,19 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
             {/* Tab bar */}
             <div className="flex border-b border-border/30 flex-shrink-0">
               {([
-                ["odds",        `Bookmaker Odds${availableMarkets.length ? ` (${availableMarkets.length})` : ""}`],
-                ["stats",       "Team Stats"],
+                ["odds",   `Bookmaker Odds${availableMarkets.length ? ` (${availableMarkets.length})` : ""}`],
+                ["stats",  "Team Stats"],
                 ...(match.homePlayerStats || match.awayPlayerStats ? [["players", "Players"]] : []),
-                ["predictions", "Predictions"],
               ] as [string, string][]).map(([t, label]) => (
                 <button
                   key={t}
-                  onClick={() => setTab(t as "odds" | "stats" | "players" | "predictions")}
-                  className={`px-6 py-2.5 text-[10px] font-mono uppercase tracking-widest border-b-2 transition-all flex items-center gap-1.5 ${
+                  onClick={() => setTab(t as "odds" | "stats" | "players")}
+                  className={`px-6 py-2.5 text-[10px] font-mono uppercase tracking-widest border-b-2 transition-all ${
                     tab === t
                       ? "border-primary text-primary bg-primary/5"
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  {t === "predictions" && <Brain className="w-3 h-3" />}
                   {label}
                 </button>
               ))}
@@ -1325,11 +1323,6 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
                     awayAnalytic={awayAnalytic}
                   />
                 </div>
-              )}
-
-              {/* ── PREDICTIONS TAB ── */}
-              {tab === "predictions" && (
-                <PredictionPanel matchId={matchId} />
               )}
 
               {/* ── PLAYERS TAB ── */}
