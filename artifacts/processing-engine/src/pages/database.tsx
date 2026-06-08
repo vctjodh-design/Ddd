@@ -54,6 +54,46 @@ interface MatchDetail {
   odds: Record<string, unknown>;
 }
 
+// ── Prediction types ──────────────────────────────────────────────────────────
+
+interface PredictionScore { home: number; away: number; prob: number; }
+
+interface PredictionOutput {
+  method: string;
+  nSamples: number;
+  accuracy1x2: number;
+  accuracyBtts: number;
+  trainedAt: number;
+  featureQuality: "full" | "partial" | "minimal";
+  lambdaHome: number;
+  lambdaAway: number;
+  onex2: { H: number; D: number; A: number };
+  dc: { "1X": number; "12": number; X2: number };
+  btts: { yes: number; no: number };
+  corners: { predicted: number; stdDev: number; over85: number; over95: number; over105: number };
+  correctScores: PredictionScore[];
+  bestOdds: {
+    onex2: { H: number | null; D: number | null; A: number | null };
+    btts: { yes: number | null; no: number | null };
+    dc: { "1X": number | null; "12": number | null; X2: number | null };
+    ou: { over85: number | null; under85: number | null; over95: number | null; under95: number | null; over105: number | null; under105: number | null };
+  };
+  impliedProbs: {
+    onex2: { H: number; D: number; A: number };
+    btts: { yes: number; no: number };
+    dc: { "1X": number; "12": number; X2: number };
+  };
+  valueBets: Array<{ market: string; outcome: string; modelProb: number; impliedProb: number; edge: number; bestOdds: number | null }>;
+}
+
+interface ModelStatus {
+  trained: boolean;
+  nSamples: number;
+  accuracy1x2: number;
+  accuracyBtts: number;
+  trainedAt: number;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
@@ -840,6 +880,230 @@ function PlayerPerGamePanel({ teamName, playerStats }: { teamName: string; playe
   );
 }
 
+// ── Prediction Panel ──────────────────────────────────────────────────────────
+
+function PredictionPanel({ matchId }: { matchId: string }) {
+  const [prediction, setPrediction] = useState<PredictionOutput | null>(null);
+  const [modelSt, setModelSt] = useState<ModelStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [training, setTraining] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    apiFetch<ModelStatus>("/model/status").then(setModelSt).catch(() => {});
+  }, []);
+
+  const runPrediction = async () => {
+    setLoading(true); setError(null);
+    try {
+      const r = await apiFetch<PredictionOutput>("/model/predict", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ matchId }),
+      });
+      setPrediction(r);
+    } catch { setError("Prediction failed"); }
+    finally { setLoading(false); }
+  };
+
+  const handleTrain = async () => {
+    setTraining(true);
+    try {
+      await apiFetch("/model/train", { method: "POST" });
+      const s = await apiFetch<ModelStatus>("/model/status");
+      setModelSt(s);
+    } catch {} finally { setTraining(false); }
+  };
+
+  function ProbRow({ label, modelProb, impliedProb, bestOddsVal, isValue }: {
+    label: string; modelProb: number; impliedProb: number;
+    bestOddsVal: number | null; isValue: boolean;
+  }) {
+    const pct = Math.round(modelProb * 100);
+    const impPct = Math.round(impliedProb * 100);
+    const edgePct = Math.round((modelProb - impliedProb) * 100);
+    return (
+      <div className={`px-4 py-2 flex items-center gap-3 ${isValue ? "bg-green-500/5 border-l-2 border-green-500/50" : ""}`}>
+        <div className="w-16 text-[10px] font-mono text-foreground/80 shrink-0">{label}</div>
+        <div className="flex-1 relative h-3.5 bg-white/5 overflow-hidden rounded-sm">
+          <div
+            className={`absolute left-0 top-0 h-full ${isValue ? "bg-green-500/50" : "bg-primary/40"}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        <div className="w-8 text-[10px] font-mono font-bold tabular-nums text-right">{pct}%</div>
+        <div className="w-10 text-[10px] font-mono text-primary/70 tabular-nums text-right">
+          {bestOddsVal !== null ? bestOddsVal.toFixed(2) : <span className="text-muted-foreground/30">—</span>}
+        </div>
+        <div className="w-10 text-[9px] font-mono tabular-nums text-muted-foreground/40 text-right">{impPct}%</div>
+        <div className={`w-12 text-[9px] font-mono tabular-nums text-right font-bold ${edgePct > 0 ? "text-green-400" : edgePct < -5 ? "text-red-400/50" : "text-muted-foreground/30"}`}>
+          {edgePct > 0 ? "+" : ""}{edgePct}%
+        </div>
+        <div className="w-3.5">{isValue && <Star className="w-3 h-3 text-yellow-400" />}</div>
+      </div>
+    );
+  }
+
+  if (!prediction) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-5 p-6">
+        {modelSt && (
+          <div className="text-center space-y-1">
+            {modelSt.trained ? (
+              <div className="text-[10px] font-mono text-green-400/70">
+                ✓ Model trained · {modelSt.nSamples} samples · 1X2: {modelSt.accuracy1x2}% · BTTS: {modelSt.accuracyBtts}%
+              </div>
+            ) : (
+              <div className="text-[10px] font-mono text-yellow-400/60">
+                No ML model trained · statistical predictions (Poisson) will be used
+              </div>
+            )}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <button
+            onClick={runPrediction}
+            disabled={loading}
+            className="flex items-center gap-2 px-5 py-2.5 text-[10px] font-mono uppercase tracking-widest border border-primary/60 text-primary hover:bg-primary/10 transition-all disabled:opacity-50"
+          >
+            <Zap className={`w-3.5 h-3.5 ${loading ? "animate-pulse" : ""}`} />
+            {loading ? "Running…" : "Run Prediction"}
+          </button>
+          <button
+            onClick={handleTrain}
+            disabled={training}
+            className="flex items-center gap-2 px-4 py-2.5 text-[10px] font-mono uppercase tracking-widest border border-border/40 text-muted-foreground hover:border-primary/30 hover:text-foreground transition-all disabled:opacity-50"
+          >
+            <Brain className={`w-3.5 h-3.5 ${training ? "animate-pulse" : ""}`} />
+            {training ? "Training…" : modelSt?.trained ? "Retrain Model" : "Train Model"}
+          </button>
+        </div>
+        {error && <div className="text-[10px] font-mono text-destructive">{error}</div>}
+        <div className="text-[9px] font-mono text-muted-foreground/30 text-center max-w-xs">
+          Predictions use Poisson distribution + Random Forest ensemble trained on all stored match data
+        </div>
+      </div>
+    );
+  }
+
+  const isVal = (m: string, o: string) => prediction.valueBets.some(v => v.market === m && v.outcome === o);
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {/* Model info bar */}
+      <div className="px-4 py-2 border-b border-border/30 flex items-center justify-between text-[9px] font-mono">
+        <div className="flex items-center gap-3 text-muted-foreground/50">
+          <span className="text-primary/70">{prediction.method}</span>
+          {prediction.nSamples > 0 && <span>· {prediction.nSamples} samples</span>}
+          {prediction.accuracy1x2 > 0 && <span>· 1X2 acc {prediction.accuracy1x2}%</span>}
+          <span className={
+            prediction.featureQuality === "full" ? "text-green-400/60" :
+            prediction.featureQuality === "partial" ? "text-yellow-400/60" : "text-red-400/60"
+          }>
+            · {prediction.featureQuality} data
+          </span>
+        </div>
+        <button
+          onClick={() => setPrediction(null)}
+          className="text-muted-foreground/30 hover:text-foreground border border-border/20 px-2 py-0.5 transition-colors"
+        >
+          Reset
+        </button>
+      </div>
+
+      {/* Value bets */}
+      {prediction.valueBets.length > 0 && (
+        <div className="mx-4 mt-3 border border-yellow-500/30 bg-yellow-500/5 p-3 space-y-1.5">
+          <div className="text-[9px] font-mono uppercase tracking-widest text-yellow-400/80 flex items-center gap-1.5">
+            <Star className="w-3 h-3" /> Value Bets Found ({prediction.valueBets.length})
+          </div>
+          {prediction.valueBets.map((v, i) => (
+            <div key={i} className="flex items-center gap-2 text-[10px] font-mono flex-wrap">
+              <span className="text-yellow-300 font-bold">{v.market} {v.outcome}</span>
+              <span className="text-foreground/70">{Math.round(v.modelProb * 100)}% model</span>
+              <span className="text-muted-foreground/40">vs {Math.round(v.impliedProb * 100)}% bookie</span>
+              <span className="text-green-400 font-bold">+{Math.round(v.edge * 100)}% edge</span>
+              {v.bestOdds && <span className="text-primary ml-1">@ {v.bestOdds.toFixed(2)}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Poisson params */}
+      <div className="px-4 pt-3 pb-1 text-[9px] font-mono text-muted-foreground/35">
+        λ Home = {prediction.lambdaHome} · λ Away = {prediction.lambdaAway}
+      </div>
+
+      {/* Column header */}
+      <div className="px-4 pb-1 flex items-center gap-3 text-[8px] font-mono uppercase tracking-widest text-muted-foreground/25">
+        <div className="w-16">Outcome</div>
+        <div className="flex-1">Confidence</div>
+        <div className="w-8 text-right">Model</div>
+        <div className="w-10 text-right">Odds</div>
+        <div className="w-10 text-right">Implied</div>
+        <div className="w-12 text-right">Edge</div>
+        <div className="w-3.5" />
+      </div>
+
+      {/* 1X2 */}
+      <section className="border-b border-border/20">
+        <div className="px-4 py-1.5 text-[9px] font-mono uppercase tracking-widest text-muted-foreground/35 bg-card/30">1X2</div>
+        <ProbRow label="Home Win" modelProb={prediction.onex2.H} impliedProb={prediction.impliedProbs.onex2.H} bestOddsVal={prediction.bestOdds.onex2.H} isValue={isVal("1X2","Home")} />
+        <ProbRow label="Draw"     modelProb={prediction.onex2.D} impliedProb={prediction.impliedProbs.onex2.D} bestOddsVal={prediction.bestOdds.onex2.D} isValue={isVal("1X2","Draw")} />
+        <ProbRow label="Away Win" modelProb={prediction.onex2.A} impliedProb={prediction.impliedProbs.onex2.A} bestOddsVal={prediction.bestOdds.onex2.A} isValue={isVal("1X2","Away")} />
+      </section>
+
+      {/* BTTS */}
+      <section className="border-b border-border/20">
+        <div className="px-4 py-1.5 text-[9px] font-mono uppercase tracking-widest text-muted-foreground/35 bg-card/30">Both Teams To Score</div>
+        <ProbRow label="Yes" modelProb={prediction.btts.yes} impliedProb={prediction.impliedProbs.btts.yes} bestOddsVal={prediction.bestOdds.btts.yes} isValue={isVal("BTTS","Yes")} />
+        <ProbRow label="No"  modelProb={prediction.btts.no}  impliedProb={prediction.impliedProbs.btts.no}  bestOddsVal={prediction.bestOdds.btts.no}  isValue={isVal("BTTS","No")} />
+      </section>
+
+      {/* Double Chance */}
+      <section className="border-b border-border/20">
+        <div className="px-4 py-1.5 text-[9px] font-mono uppercase tracking-widest text-muted-foreground/35 bg-card/30">Double Chance</div>
+        <ProbRow label="1X (1 or X)" modelProb={prediction.dc["1X"]} impliedProb={prediction.impliedProbs.dc["1X"]} bestOddsVal={prediction.bestOdds.dc["1X"]} isValue={isVal("DC","1X")} />
+        <ProbRow label="12 (1 or 2)" modelProb={prediction.dc["12"]} impliedProb={prediction.impliedProbs.dc["12"]} bestOddsVal={prediction.bestOdds.dc["12"]} isValue={isVal("DC","12")} />
+        <ProbRow label="X2 (X or 2)" modelProb={prediction.dc.X2}    impliedProb={prediction.impliedProbs.dc.X2}    bestOddsVal={prediction.bestOdds.dc.X2}    isValue={isVal("DC","X2")} />
+      </section>
+
+      {/* Correct Score */}
+      <section className="border-b border-border/20">
+        <div className="px-4 py-1.5 text-[9px] font-mono uppercase tracking-widest text-muted-foreground/35 bg-card/30">
+          Correct Score <span className="text-muted-foreground/25 normal-case font-normal tracking-normal">· Poisson distribution</span>
+        </div>
+        <div className="px-4 py-3 grid grid-cols-4 gap-2">
+          {prediction.correctScores.slice(0, 8).map((s, i) => (
+            <div key={i} className={`border p-2 text-center ${i === 0 ? "border-primary/50 bg-primary/8" : "border-border/30 bg-card/20"}`}>
+              <div className="text-[13px] font-mono font-bold text-foreground">{s.home}–{s.away}</div>
+              <div className="text-[9px] font-mono text-muted-foreground/50 mt-0.5">{Math.round(s.prob * 100)}%</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Total Corners */}
+      <section>
+        <div className="px-4 py-1.5 text-[9px] font-mono uppercase tracking-widest text-muted-foreground/35 bg-card/30">
+          Total Corners <span className="text-muted-foreground/25 normal-case font-normal tracking-normal">· statistical</span>
+        </div>
+        <div className="px-4 py-3 space-y-2.5">
+          <div className="flex items-baseline gap-2">
+            <span className="text-2xl font-mono font-bold text-primary">{prediction.corners.predicted}</span>
+            <span className="text-[10px] font-mono text-muted-foreground/50">predicted corners  (σ = {prediction.corners.stdDev})</span>
+          </div>
+          <div className="flex gap-5 text-[10px] font-mono">
+            <span>Over 8.5 <span className="font-bold text-foreground">{prediction.corners.over85}%</span></span>
+            <span>Over 9.5 <span className="font-bold text-foreground">{prediction.corners.over95}%</span></span>
+            <span>Over 10.5 <span className="font-bold text-foreground">{prediction.corners.over105}%</span></span>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 // ── Match detail modal ────────────────────────────────────────────────────────
 
 const MARKETS: Array<[string, string]> = [
@@ -850,7 +1114,7 @@ const MARKETS: Array<[string, string]> = [
 function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () => void }) {
   const [match, setMatch] = useState<MatchDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"odds" | "stats" | "players">("odds");
+  const [tab, setTab] = useState<"odds" | "stats" | "players" | "predictions">("odds");
   const [selectedMarket, setSelectedMarket] = useState("1x2");
   const [playerView, setPlayerView] = useState<"summary" | "games">("summary");
 
@@ -941,19 +1205,21 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
             {/* Tab bar */}
             <div className="flex border-b border-border/30 flex-shrink-0">
               {([
-                ["odds",    `Bookmaker Odds${availableMarkets.length ? ` (${availableMarkets.length})` : ""}`],
-                ["stats",   "Team Stats"],
+                ["odds",        `Bookmaker Odds${availableMarkets.length ? ` (${availableMarkets.length})` : ""}`],
+                ["stats",       "Team Stats"],
                 ...(match.homePlayerStats || match.awayPlayerStats ? [["players", "Players"]] : []),
+                ["predictions", "Predictions"],
               ] as [string, string][]).map(([t, label]) => (
                 <button
                   key={t}
-                  onClick={() => setTab(t as "odds" | "stats" | "players")}
-                  className={`px-6 py-2.5 text-[10px] font-mono uppercase tracking-widest border-b-2 transition-all ${
+                  onClick={() => setTab(t as "odds" | "stats" | "players" | "predictions")}
+                  className={`px-6 py-2.5 text-[10px] font-mono uppercase tracking-widest border-b-2 transition-all flex items-center gap-1.5 ${
                     tab === t
                       ? "border-primary text-primary bg-primary/5"
                       : "border-transparent text-muted-foreground hover:text-foreground"
                   }`}
                 >
+                  {t === "predictions" && <Brain className="w-3 h-3" />}
                   {label}
                 </button>
               ))}
@@ -1061,6 +1327,11 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
                 </div>
               )}
 
+              {/* ── PREDICTIONS TAB ── */}
+              {tab === "predictions" && (
+                <PredictionPanel matchId={matchId} />
+              )}
+
               {/* ── PLAYERS TAB ── */}
               {tab === "players" && (
                 <div className="flex flex-col flex-1 overflow-hidden">
@@ -1139,6 +1410,73 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
           </>
         )}
       </motion.div>
+    </div>
+  );
+}
+
+// ── Model Training Card ───────────────────────────────────────────────────────
+
+function ModelTrainingCard({ totalMatches }: { totalMatches: number }) {
+  const [status, setStatus] = useState<ModelStatus | null>(null);
+  const [training, setTraining] = useState(false);
+  const [done, setDone] = useState<{ nSamples: number; accuracy1x2: number; accuracyBtts: number } | null>(null);
+
+  useEffect(() => {
+    apiFetch<ModelStatus>("/model/status").then(setStatus).catch(() => {});
+  }, []);
+
+  const train = async () => {
+    setTraining(true); setDone(null);
+    try {
+      const r = await apiFetch<{ ok: boolean; nSamples: number; accuracy1x2: number; accuracyBtts: number }>("/model/train", { method: "POST" });
+      setDone(r);
+      const s = await apiFetch<ModelStatus>("/model/status");
+      setStatus(s);
+    } catch {} finally { setTraining(false); }
+  };
+
+  return (
+    <div className="border border-border/40 bg-card/30 p-4 flex items-center gap-5">
+      <div className="text-primary/50 shrink-0">
+        <Brain className="w-7 h-7" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/60 mb-1 flex items-center gap-2">
+          <TrendingUp className="w-3 h-3" /> ML Prediction Model
+        </div>
+        {status ? (
+          status.trained ? (
+            <div className="text-[11px] font-mono space-x-3 text-foreground/70">
+              <span className="text-green-400">✓ Trained</span>
+              <span>· {status.nSamples} samples</span>
+              <span>· 1X2 acc: <span className="text-foreground font-bold">{status.accuracy1x2}%</span></span>
+              <span>· BTTS acc: <span className="text-foreground font-bold">{status.accuracyBtts}%</span></span>
+              {status.trainedAt > 0 && (
+                <span className="text-muted-foreground/40">· {new Date(status.trainedAt).toLocaleDateString()}</span>
+              )}
+            </div>
+          ) : (
+            <div className="text-[11px] font-mono text-muted-foreground/50">
+              Not trained · {totalMatches} matches available · click Train to build the model
+            </div>
+          )
+        ) : (
+          <div className="text-[11px] font-mono text-muted-foreground/30 animate-pulse">Loading…</div>
+        )}
+        {done && (
+          <div className="text-[10px] font-mono text-green-400/80 mt-1">
+            ✓ Trained on {done.nSamples} samples — 1X2: {done.accuracy1x2}% · BTTS: {done.accuracyBtts}%
+          </div>
+        )}
+      </div>
+      <button
+        onClick={train}
+        disabled={training}
+        className="flex items-center gap-2 px-4 py-2 text-[10px] font-mono uppercase tracking-widest border border-primary/50 text-primary hover:bg-primary/10 transition-all disabled:opacity-50 shrink-0"
+      >
+        <Brain className={`w-3 h-3 ${training ? "animate-pulse" : ""}`} />
+        {training ? "Training…" : status?.trained ? "Retrain" : "Train Model"}
+      </button>
     </div>
   );
 }
@@ -1238,6 +1576,8 @@ export default function DatabasePage() {
             ))}
           </div>
         )}
+
+        <ModelTrainingCard totalMatches={stats?.matches ?? 0} />
 
         <div>
           <div className="flex items-center gap-3 mb-3">

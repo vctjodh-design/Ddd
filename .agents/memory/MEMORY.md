@@ -1,3 +1,4 @@
 - [better-sqlite3 native build](better-sqlite3-build.md) — must run prebuild-install manually after pnpm install; pnpm approve-builds interactive UI doesn't work in non-TTY.
 - [Bulk upload pipeline](bulk-upload-pipeline.md) — OddsPortal scraper + StatsHub + SQLite; key files and constraints documented.
 - [BetExplorer scraper](betexplorer-scraper.md) — plain HTTP odds scraper; API codes, endpoint format, line parsing, and rate-limit strategy documented.
+- [ML prediction system](ml-prediction.md) — RF+Poisson ensemble; field aliasing for both stored_matches and processing_matches; value-bet threshold 4%.
