@@ -896,7 +896,7 @@ interface FixturePrediction {
 
 function ProbBar({ label, modelPct, impliedPct, odds }: { label: string; modelPct: number; impliedPct: number; odds?: number }) {
   const edge = modelPct - impliedPct;
-  const isValue = edge > 4;
+  const isValue = impliedPct > 0 && edge > 4;
   return (
     <div className={`p-3 border rounded-sm ${isValue ? "border-amber-500/40 bg-amber-500/5" : "border-border/30 bg-card/20"}`}>
       <div className="flex items-center justify-between mb-2">

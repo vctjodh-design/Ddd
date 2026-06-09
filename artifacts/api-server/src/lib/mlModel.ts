@@ -245,8 +245,15 @@ function poissonPredict(f: MatchFeatures): PoissonResult {
   const aAtk = f.awayGoalsAvg > 0 ? f.awayGoalsAvg / LEAGUE_GOALS_AVG : 1.0;
   const aDef = f.awayGoalsConcAvg > 0 ? f.awayGoalsConcAvg / LEAGUE_GOALS_AVG : 1.0;
 
-  const lH = Math.max(0.1, hAtk * aDef * LEAGUE_GOALS_AVG * 1.1);
-  const lA = Math.max(0.1, aAtk * hDef * LEAGUE_GOALS_AVG * 0.9);
+  // Only apply home advantage multiplier when real goal stats exist.
+  // Without stats both teams default to 1.0, so a fixed multiplier creates
+  // artificial home bias on every no-data match.
+  const hasStats = f.homeGoalsAvg > 0 || f.awayGoalsAvg > 0;
+  const homeAdv  = hasStats ? 1.1  : 1.03;
+  const awayDisadv = hasStats ? 0.9 : 0.97;
+
+  const lH = Math.max(0.1, hAtk * aDef * LEAGUE_GOALS_AVG * homeAdv);
+  const lA = Math.max(0.1, aAtk * hDef * LEAGUE_GOALS_AVG * awayDisadv);
 
   let homeWin = 0, draw = 0, awayWin = 0, btts = 0, over25 = 0;
   const scores: Array<{ home: number; away: number; prob: number }> = [];
@@ -493,10 +500,14 @@ export function predictMatch(m: MatchLike): PredictionOutput {
     } catch { /* fall back */ }
   }
 
-  // Blend in market consensus when feature quality is low
-  if (features.oddsHome > 0 && featureQuality !== "full") {
+  // Blend in market consensus — weight scales up as data gets thinner.
+  // "minimal": model has no real stats, so market is the best anchor (65%).
+  // "partial": some stats but unreliable, moderate correction (40%).
+  // "full": stats are rich, small nudge toward market (15%).
+  if (features.oddsHome > 0) {
     const mktArr = [features.oddsHome, features.oddsDraw, features.oddsAway];
-    onex2Arr = blendProbs(onex2Arr, mktArr, 0.25);
+    const mktW = featureQuality === "minimal" ? 0.65 : featureQuality === "partial" ? 0.40 : 0.15;
+    onex2Arr = blendProbs(onex2Arr, mktArr, mktW);
   }
 
   const onex2 = { H: onex2Arr[0], D: onex2Arr[1], A: onex2Arr[2] };
