@@ -882,11 +882,14 @@ interface ScoreProb { home: number; away: number; prob: number }
 interface ValueBet { market: string; outcome: string; modelProb: number; impliedProb: number; edge: number; bestOdds: number }
 interface CornerPred { predicted: number; over85: number; over95: number; over105: number }
 interface BestOdds { H?: number; D?: number; A?: number; yes?: number; no?: number; "1X"?: number; "12"?: number; X2?: number }
+interface ArbLeg { outcome: string; bookmaker: string; odds: number; stakePercent: number }
+interface ArbOpportunity { market: string; impliedSum: number; profitPct: number; legs: ArbLeg[] }
 interface FixturePrediction {
   method: string; featureQuality: string;
   onex2: ProbMap; dc: { "1X": number; "12": number; X2: number };
   btts: Prob2; corners: CornerPred;
   correctScores: ScoreProb[]; valueBets: ValueBet[];
+  arbitrage: ArbOpportunity[];
   lambdaHome: number; lambdaAway: number;
   bestOdds: BestOdds;
   impliedProbs: { H?: number; D?: number; A?: number; yes?: number; no?: number };
@@ -1097,6 +1100,49 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Arbitrage / Sure-Bet */}
+          {pred.arbitrage && pred.arbitrage.length > 0 ? (
+            <div>
+              <div className="text-[10px] font-mono uppercase tracking-widest text-green-400/80 mb-2 flex items-center gap-1.5">
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-green-500/15 border border-green-500/30 rounded-sm text-green-400 text-[9px] font-bold">SURE-BET</span>
+                Arbitrage Detected ({pred.arbitrage.length} market{pred.arbitrage.length > 1 ? "s" : ""})
+              </div>
+              <div className="space-y-2">
+                {pred.arbitrage.map((arb, i) => (
+                  <div key={i} className="border border-green-500/30 bg-green-500/5 p-3 rounded-sm">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] font-mono font-bold text-green-400">{arb.market}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[9px] font-mono text-muted-foreground/50">implied Σ {arb.impliedSum.toFixed(4)}</span>
+                        <span className="text-[11px] font-mono font-bold text-green-300 bg-green-500/20 px-1.5 py-0.5 rounded-sm">
+                          +{arb.profitPct.toFixed(2)}% guaranteed
+                        </span>
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      {arb.legs.map((leg, j) => (
+                        <div key={j} className="flex items-center gap-2 text-[10px] font-mono">
+                          <span className="text-muted-foreground/60 w-10">{leg.outcome}</span>
+                          <span className="text-foreground/80 font-bold flex-1">@{leg.odds.toFixed(2)}</span>
+                          <span className="text-muted-foreground/50">{leg.bookmaker}</span>
+                          <span className="text-green-400 font-bold w-14 text-right">{leg.stakePercent.toFixed(1)}% stake</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-2 text-[9px] font-mono text-muted-foreground/40">
+                      Place the stake % above on each outcome to guarantee profit whatever the result.
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="text-[9px] font-mono text-muted-foreground/25 flex items-center gap-1.5">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/20" />
+              No arbitrage found across available bookmakers
             </div>
           )}
 

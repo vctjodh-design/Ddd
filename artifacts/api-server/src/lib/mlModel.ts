@@ -5,6 +5,7 @@
  */
 import { RandomForestClassifier } from "ml-random-forest";
 import { getDb } from "./db.js";
+import { scanArbitrage, type ArbOpportunity } from "./arbScanner.js";
 
 // ── Internal types ────────────────────────────────────────────────────────────
 
@@ -474,6 +475,7 @@ export interface PredictionOutput {
     dc: { "1X": number; "12": number; X2: number };
   };
   valueBets: Array<{ market: string; outcome: string; modelProb: number; impliedProb: number; edge: number; bestOdds: number | null }>;
+  arbitrage: ArbOpportunity[];
 }
 
 export function predictMatch(m: MatchLike): PredictionOutput {
@@ -599,6 +601,14 @@ export function predictMatch(m: MatchLike): PredictionOutput {
   chk("DC", "X2", dc.X2,    impliedProbs.dc.X2,    bestOdds.dc.X2);
   valueBets.sort((a, b) => b.edge - a.edge);
 
+  // ── Arbitrage scanner ─────────────────────────────────────────────────────
+  const arbitrage = scanArbitrage({
+    onex2: ox,
+    btts:  ob,
+    dc:    od,
+    ou:    ou,
+  });
+
   return {
     method, featureQuality,
     nSamples: state?.nSamples ?? 0,
@@ -609,7 +619,7 @@ export function predictMatch(m: MatchLike): PredictionOutput {
     lambdaAway: Math.round(poisson.lambdaAway * 100) / 100,
     onex2, dc, btts, corners,
     correctScores: poisson.correctScores,
-    bestOdds, impliedProbs, valueBets,
+    bestOdds, impliedProbs, valueBets, arbitrage,
   };
 }
 
