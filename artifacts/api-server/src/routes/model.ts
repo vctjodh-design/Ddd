@@ -56,10 +56,7 @@ router.post("/model/predict-live", async (req, res) => {
     return void res.status(400).json({ error: "homeTeamId, awayTeamId, homeTeam, awayTeam, kickoffTs required" });
   }
 
-  // Fast path: already processed
-  const dbPred = predictByTeams(homeTeam, awayTeam, kickoffTs);
-  if (dbPred) return void res.json({ ...dbPred, source: "db" });
-
+  // Always scrape live — DB matches are training data only, not prediction source.
   // Live scrape — fetch team stats, player stats, and BetExplorer results in parallel
   try {
     const dateStr = new Date(kickoffTs * 1000).toISOString().slice(0, 10);

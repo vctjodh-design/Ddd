@@ -1016,7 +1016,82 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
       {/* Results */}
       {pred && (
         <>
-          {/* 1X2 */}
+          {/* ── SURE-BET / ARBITRAGE — shown first, most actionable ── */}
+          <div className={`border p-3 ${pred.arbitrage && pred.arbitrage.length > 0 ? "border-green-500/40 bg-green-500/8" : "border-border/20 bg-card/10"}`}>
+            <div className="text-[10px] font-mono uppercase tracking-widest mb-2 flex items-center gap-2">
+              {pred.arbitrage && pred.arbitrage.length > 0 ? (
+                <>
+                  <span className="px-2 py-0.5 bg-green-500/20 border border-green-500/50 text-green-300 text-[9px] font-bold tracking-widest">SURE-BET FOUND</span>
+                  <span className="text-green-400/80">{pred.arbitrage.length} market{pred.arbitrage.length > 1 ? "s" : ""} with guaranteed profit</span>
+                </>
+              ) : (
+                <>
+                  <span className="px-2 py-0.5 bg-muted/20 border border-border/30 text-muted-foreground/40 text-[9px] font-bold tracking-widest">NO SURE-BET</span>
+                  <span className="text-muted-foreground/30">No arbitrage across available bookmakers</span>
+                </>
+              )}
+            </div>
+            {pred.arbitrage && pred.arbitrage.length > 0 && (
+              <div className="space-y-2 mt-3">
+                {pred.arbitrage.map((arb, i) => (
+                  <div key={i} className="border border-green-500/30 bg-green-500/5 p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] font-mono font-bold text-green-400">{arb.market}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[9px] font-mono text-muted-foreground/50">Σ implied = {arb.impliedSum.toFixed(4)}</span>
+                        <span className="text-[12px] font-mono font-bold text-green-300 bg-green-500/20 border border-green-500/30 px-2 py-0.5">
+                          +{arb.profitPct.toFixed(2)}% profit
+                        </span>
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      {arb.legs.map((leg, j) => (
+                        <div key={j} className="flex items-center gap-2 text-[10px] font-mono">
+                          <span className="text-muted-foreground/60 w-10 shrink-0">{leg.outcome}</span>
+                          <span className="text-foreground font-bold">@{leg.odds.toFixed(2)}</span>
+                          <span className="text-muted-foreground/50 flex-1">{leg.bookmaker}</span>
+                          <span className="text-green-400 font-bold">{leg.stakePercent.toFixed(1)}% of stake</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[9px] font-mono text-muted-foreground/35">
+                      Split your stake at the % above across all legs — profit is guaranteed regardless of outcome.
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── VALUE BETS — shown second ── */}
+          {pred.valueBets.length > 0 ? (
+            <div className="border border-amber-500/30 bg-amber-500/5 p-3">
+              <div className="text-[10px] font-mono uppercase tracking-widest text-amber-400/80 mb-2 flex items-center gap-2">
+                <Star className="w-3 h-3" />
+                Value Bets — {pred.valueBets.length} opportunity{pred.valueBets.length > 1 ? "ies" : "y"} detected
+              </div>
+              <div className="space-y-1.5">
+                {pred.valueBets.map((v, i) => (
+                  <div key={i} className="flex items-center gap-3 border border-amber-500/20 bg-amber-500/5 p-2.5">
+                    <span className="text-[11px] font-mono font-bold text-foreground/80 flex-1">{v.market} · {v.outcome}</span>
+                    <div className="flex items-center gap-3 text-[10px] font-mono">
+                      <span className="text-muted-foreground/50">Model {(v.modelProb * 100).toFixed(0)}%</span>
+                      <span className="text-muted-foreground/50">Implied {(v.impliedProb * 100).toFixed(0)}%</span>
+                      <span className="text-amber-300 font-bold">+{(v.edge * 100).toFixed(1)}% edge</span>
+                      <span className="text-primary font-bold">@{v.bestOdds.toFixed(2)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="text-[9px] font-mono text-muted-foreground/25 flex items-center gap-1.5">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/20" />
+              No value bets detected (model edge &lt; 4% vs implied odds)
+            </div>
+          )}
+
+          {/* ── 1X2 ── */}
           <div>
             <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2 flex items-center gap-1.5">
               <TrendingUp className="w-3 h-3" /> Match Result (1X2)
@@ -1028,7 +1103,7 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
             </div>
           </div>
 
-          {/* BTTS */}
+          {/* ── BTTS ── */}
           <div>
             <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">Both Teams to Score</div>
             <div className="grid grid-cols-2 gap-2">
@@ -1037,7 +1112,7 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
             </div>
           </div>
 
-          {/* Double Chance */}
+          {/* ── Double Chance ── */}
           <div>
             <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">Double Chance</div>
             <div className="grid grid-cols-3 gap-2">
@@ -1047,7 +1122,7 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
             </div>
           </div>
 
-          {/* Corners */}
+          {/* ── Corners ── */}
           <div className="border border-border/30 bg-card/20 p-3">
             <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-3">Total Corners</div>
             <div className="grid grid-cols-4 gap-3">
@@ -1065,13 +1140,12 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
             </div>
           </div>
 
-          {/* Correct Score */}
+          {/* ── Correct Scores ── */}
           <div>
             <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">Most Likely Correct Scores</div>
             <div className="grid grid-cols-5 gap-1.5">
               {pred.correctScores.slice(0, 10).map(s => (
-                <div key={`${s.home}-${s.away}`}
-                  className="border border-border/30 bg-card/20 p-2 text-center">
+                <div key={`${s.home}-${s.away}`} className="border border-border/30 bg-card/20 p-2 text-center">
                   <div className="text-sm font-mono font-bold text-foreground">{s.home}–{s.away}</div>
                   <div className="text-[9px] font-mono text-muted-foreground/50">{(s.prob * 100).toFixed(1)}%</div>
                 </div>
@@ -1079,76 +1153,9 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
             </div>
           </div>
 
-          {/* Value bets */}
-          {pred.valueBets.length > 0 && (
-            <div>
-              <div className="text-[10px] font-mono uppercase tracking-widest text-amber-400/70 mb-2 flex items-center gap-1.5">
-                <Star className="w-3 h-3" /> Value Bets Detected
-              </div>
-              <div className="space-y-1.5">
-                {pred.valueBets.map((v, i) => (
-                  <div key={i} className="flex items-center gap-3 border border-amber-500/20 bg-amber-500/5 p-2.5">
-                    <div className="flex-1">
-                      <span className="text-[11px] font-mono font-bold text-foreground/80">{v.market} {v.outcome}</span>
-                    </div>
-                    <div className="flex items-center gap-4 text-[10px] font-mono">
-                      <span className="text-muted-foreground/50">Model: {(v.modelProb * 100).toFixed(0)}%</span>
-                      <span className="text-muted-foreground/50">Implied: {(v.impliedProb * 100).toFixed(0)}%</span>
-                      <span className="text-amber-400 font-bold">+{(v.edge * 100).toFixed(1)}% edge</span>
-                      <span className="text-primary">@{v.bestOdds.toFixed(2)}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Arbitrage / Sure-Bet */}
-          {pred.arbitrage && pred.arbitrage.length > 0 ? (
-            <div>
-              <div className="text-[10px] font-mono uppercase tracking-widest text-green-400/80 mb-2 flex items-center gap-1.5">
-                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-green-500/15 border border-green-500/30 rounded-sm text-green-400 text-[9px] font-bold">SURE-BET</span>
-                Arbitrage Detected ({pred.arbitrage.length} market{pred.arbitrage.length > 1 ? "s" : ""})
-              </div>
-              <div className="space-y-2">
-                {pred.arbitrage.map((arb, i) => (
-                  <div key={i} className="border border-green-500/30 bg-green-500/5 p-3 rounded-sm">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[11px] font-mono font-bold text-green-400">{arb.market}</span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[9px] font-mono text-muted-foreground/50">implied Σ {arb.impliedSum.toFixed(4)}</span>
-                        <span className="text-[11px] font-mono font-bold text-green-300 bg-green-500/20 px-1.5 py-0.5 rounded-sm">
-                          +{arb.profitPct.toFixed(2)}% guaranteed
-                        </span>
-                      </div>
-                    </div>
-                    <div className="space-y-1">
-                      {arb.legs.map((leg, j) => (
-                        <div key={j} className="flex items-center gap-2 text-[10px] font-mono">
-                          <span className="text-muted-foreground/60 w-10">{leg.outcome}</span>
-                          <span className="text-foreground/80 font-bold flex-1">@{leg.odds.toFixed(2)}</span>
-                          <span className="text-muted-foreground/50">{leg.bookmaker}</span>
-                          <span className="text-green-400 font-bold w-14 text-right">{leg.stakePercent.toFixed(1)}% stake</span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mt-2 text-[9px] font-mono text-muted-foreground/40">
-                      Place the stake % above on each outcome to guarantee profit whatever the result.
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="text-[9px] font-mono text-muted-foreground/25 flex items-center gap-1.5">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/20" />
-              No arbitrage found across available bookmakers
-            </div>
-          )}
-
-          {/* Poisson lambdas */}
+          {/* ── Poisson debug ── */}
           <div className="text-[9px] font-mono text-muted-foreground/30 border-t border-border/20 pt-2">
-            Poisson λ: Home {pred.lambdaHome.toFixed(2)} · Away {pred.lambdaAway.toFixed(2)}
+            Poisson λ: Home {pred.lambdaHome.toFixed(2)} · Away {pred.lambdaAway.toFixed(2)} · {pred.method} · {pred.featureQuality} data
           </div>
         </>
       )}
