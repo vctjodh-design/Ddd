@@ -41,6 +41,20 @@ URL: `https://www.betexplorer.com/match-odds/{matchId}/0/{apiCode}/odds/?lang=en
 - All markets: flat table (no tbody line-grouping).
 - O/U active line: `extractActiveLine(html)` reads `id="2.50"` from activeSubLi nav class.
 
+## Geo-filtering & Tor proxy
+
+BetExplorer geo-filters the bestOdds endpoint by visitor IP:
+- **US IP**: 3 bookmakers max (BetMGM.us, Stake.com, one other)
+- **EU IP**: 15-19 bookmakers (1xBet, 888sport, Betfair, BetInAsia, Pinnacle, etc.)
+
+`torProxy.ts` (in `api-server/src/lib/`) routes all BetExplorer fetches through Tor SOCKS5.
+Key design decisions:
+- **No StrictNodes** — fast ~7s bootstrap. StrictNodes+EU gets stuck at 50% descriptor loading for 3+ minutes.
+- **Circuit rotation via control port**: after bootstrap, check exit IP via `ipapi.co/country/` through SOCKS5. If non-EU, send `SIGNAL NEWNYM` on port 9051 and retry (max 12 attempts, 4s delay between).
+- **Eager init at module load**: `startBootstrap()` called immediately so Tor is ready before any processing job starts.
+- **`CookieAuthentication 0`** on control port (loopback only, no auth needed).
+- First circuit is EU in the vast majority of cases (SE, DE, NL etc.) — typically 0 retries needed.
+
 ## Rate limiting
 - 429 responses OR "TypeError: fetch failed" (TCP RST) if requests are too rapid.
 - `fetchMatchMarkets` uses 5 s delay between markets (bulk processing, sequential).

@@ -7,15 +7,15 @@
  *
  * Phase 2 (per-match): fetch per-bookmaker odds for 6 markets via AJAX API
  *   URL: /match-odds/{matchId}/1/{apiCode}/bestOdds/?lang=en  → JSON { odds: "<HTML>" }
- *   NOTE: /1/ + bestOdds returns ALL bookmakers regardless of IP geo-location.
- *         /0/ + odds was the geo-filtered endpoint (only 1 bookie from US IPs).
- *   tbody id="best-odds-0" contains all bookmaker rows.
- *   O/U active line is read from the nav: <li id="2.50" class="...activeSubLi...">
+ *   Requests are routed through the Tor SOCKS5 proxy (torProxy.ts) to bypass
+ *   BetExplorer's geo-filter and receive full international bookmaker coverage.
+ *   Without Tor (US IP): 3 US bookmakers. With Tor (EU exit): 10-17 per market.
  *
  * API codes:  1x2=1x2  ou=ou  ah=ah  DNB=ha  DC=dc  BTTS=bts
  */
 
 import type { ProcessingLog } from "./db.js";
+import { torFetch } from "./torProxy.js";
 
 const BASE = "https://www.betexplorer.com";
 const UA =
@@ -193,9 +193,9 @@ async function fetchMarketOnce(
   apiCode: string,
   isLineMarket: boolean,
 ): Promise<{ entries: BEBookmakerEntry[]; status: number }> {
-  // /1/ + bestOdds = all bookmakers, no geo-filter.  /0/ + odds = US-only (1 bookie).
+  // /1/ + bestOdds = all bookmakers, geo-bypassed via Tor SOCKS5 proxy.
   const url = `${BASE}/match-odds/${matchId}/1/${apiCode}/bestOdds/?lang=en`;
-  const resp = await fetch(url, {
+  const resp = await torFetch(url, {
     headers: {
       "User-Agent": UA,
       "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -204,7 +204,7 @@ async function fetchMarketOnce(
       "X-Requested-With": "XMLHttpRequest",
     },
     redirect: "follow",
-    signal: AbortSignal.timeout(25_000),
+    timeout: 40_000,
   });
   if (!resp.ok) return { entries: [], status: resp.status };
   const text = await resp.text();
@@ -386,7 +386,7 @@ export async function fetchBetExplorerMatches(
   const url = `${BASE}/football/results/?year=${year}&month=${Number(month)}&day=${Number(day)}`;
   log?.(`[BetExplorer] Fetching results page: ${url}`);
 
-  const resp = await fetch(url, {
+  const resp = await torFetch(url, {
     headers: {
       "User-Agent": UA,
       "Accept": "text/html,application/xhtml+xml",
@@ -394,7 +394,7 @@ export async function fetchBetExplorerMatches(
       "Referer": `${BASE}/football/`,
     },
     redirect: "follow",
-    signal: AbortSignal.timeout(20_000),
+    timeout: 20_000,
   });
   if (!resp.ok) throw new Error(`BetExplorer HTTP ${resp.status}`);
 
