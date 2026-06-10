@@ -65,7 +65,16 @@ export interface BEMatchFull extends BEMatch {
 // ── Normalisation / matching ───────────────────────────────────────────────────
 
 function norm(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  // Decompose accented chars (é → e + ̌ combining mark) then strip combining marks,
+  // so "Potosí" → "potosi", "Ceará" → "ceara", "Köln" → "koln" — improves fuzzy matching
+  // across systems that store diacritic-free names (BetExplorer) vs accented names (StatsHub).
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function sim(a: string, b: string): number {
@@ -304,8 +313,15 @@ export async function fetchKeyMarketsLive(
 
 // ── Results page fetch ─────────────────────────────────────────────────────────
 
-function parseResultsHtml(html: string, targetDate: string): BEMatch[] {
-  const [tYear, tMonth, tDay] = targetDate.split("-").map(Number);
+/**
+ * Parse BetExplorer results/schedule HTML for a set of acceptable dates.
+ *
+ * Why multiple dates? BetExplorer stores times in CET (UTC+2 in summer).
+ * A match at 22:00–23:59 UTC appears on the **next** calendar day in BetExplorer
+ * (e.g. 23:00 UTC June 10 → 01:00 CET June 11). To avoid missing these, callers
+ * pass both the primary UTC date and the following day.
+ */
+function parseResultsHtml(html: string, acceptDates: Set<string>): BEMatch[] {
   const results: BEMatch[] = [];
 
   let currentLeague = "";
@@ -339,7 +355,10 @@ function parseResultsHtml(html: string, targetDate: string): BEMatch[] {
     const year  = parseInt(dtParts[2]);
     const hour  = dtParts[3].padStart(2, "0");
     const min   = dtParts[4].padStart(2, "0");
-    if (day !== tDay || month !== tMonth || year !== tYear) continue;
+
+    // Accept if any of the provided dates match (handles CET vs UTC day bleed)
+    const rowDate = `${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+    if (!acceptDates.has(rowDate)) continue;
 
     // Match URL — href="/football/{country}/{league}/{home-away}/{matchId}/"
     // matchId is the last pure-alphanumeric path segment (no dashes).
@@ -390,7 +409,7 @@ function parseResultsHtml(html: string, targetDate: string): BEMatch[] {
 }
 
 /** Fetch one BetExplorer page and parse it, returning [] on any error. */
-async function fetchAndParse(url: string, date: string, label: string, log?: (msg: string) => void): Promise<BEMatch[]> {
+async function fetchAndParse(url: string, acceptDates: Set<string>, label: string, log?: (msg: string) => void): Promise<BEMatch[]> {
   log?.(`[BetExplorer] Fetching ${label}: ${url}`);
   try {
     const resp = await torFetch(url, {
@@ -407,12 +426,18 @@ async function fetchAndParse(url: string, date: string, label: string, log?: (ms
       log?.(`[BetExplorer] ${label} HTTP ${resp.status} — skipping`);
       return [];
     }
-    return parseResultsHtml(await resp.text(), date);
+    return parseResultsHtml(await resp.text(), acceptDates);
   } catch (e) {
     log?.(`[BetExplorer] ${label} fetch error: ${e} — skipping`);
     return [];
   }
 }
+
+// ── In-memory listing cache ────────────────────────────────────────────────────
+// BetExplorer rate-limits aggressively. We cache the full day listing for 20
+// minutes so multiple concurrent predict-live calls share one fetch per date.
+const listingCache = new Map<string, { matches: BEMatch[]; expiresAt: number }>();
+const CACHE_TTL_MS = 20 * 60 * 1000; // 20 minutes
 
 /**
  * Fetch all matches for a given date from BetExplorer.
@@ -422,13 +447,34 @@ async function fetchAndParse(url: string, date: string, label: string, log?: (ms
  * Results page:  /football/results/?year=YYYY&month=M&day=D  (completed matches)
  * Schedule page: /football/?date=DD.MM.YYYY                  (upcoming matches)
  *
- * @param date  ISO "YYYY-MM-DD"
+ * BetExplorer stores times in CET (UTC+2 in summer). A match at 22:00+ UTC will
+ * appear under the NEXT calendar day in BetExplorer. We therefore always include
+ * both the requested date and the following day in the filter.
+ *
+ * Results are cached in-memory for 20 minutes to avoid hammering BetExplorer
+ * when multiple fixtures on the same date are being predicted in quick succession.
+ *
+ * @param date  ISO "YYYY-MM-DD" (UTC date from kickoffTs)
  */
 export async function fetchBetExplorerMatches(
   date: string,
   log?: (msg: string) => void,
 ): Promise<BEMatch[]> {
+  // Serve from cache if still fresh
+  const cached = listingCache.get(date);
+  if (cached && Date.now() < cached.expiresAt) {
+    log?.(`[BetExplorer] Using cached listing for ${date} (${cached.matches.length} matches)`);
+    return cached.matches;
+  }
+
   const [year, month, day] = date.split("-");
+
+  // Also accept the next calendar day — CET is UTC+2, so a 22:00 UTC match
+  // appears as 00:00+ on the next day in BetExplorer's data-dt attribute.
+  const nextDay = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day) + 1));
+  const nextDate = nextDay.toISOString().slice(0, 10);
+  const acceptDates = new Set([date, nextDate]);
+  log?.(`[BetExplorer] Accepting dates: ${[...acceptDates].join(", ")}`);
 
   // DD.MM.YYYY format for the schedule page
   const ddmmyyyy = `${day.padStart(2, "0")}.${month.padStart(2, "0")}.${year}`;
@@ -438,8 +484,8 @@ export async function fetchBetExplorerMatches(
 
   // Fetch both concurrently — schedule covers upcoming, results covers completed
   const [resultMatches, scheduleMatches] = await Promise.all([
-    fetchAndParse(resultsUrl,  date, "results page",  log),
-    fetchAndParse(scheduleUrl, date, "schedule page", log),
+    fetchAndParse(resultsUrl,  acceptDates, "results page",  log),
+    fetchAndParse(scheduleUrl, acceptDates, "schedule page", log),
   ]);
 
   // Merge, deduplicating by matchId (results page takes precedence — has odds)
@@ -454,5 +500,10 @@ export async function fetchBetExplorerMatches(
 
   const withOdds = merged.filter(m => m.bestHomeOdds !== null).length;
   log?.(`[BetExplorer] ${merged.length} match(es) for ${date} (${resultMatches.length} results + ${scheduleMatches.length} scheduled), ${withOdds} with best odds`);
+
+  // Cache the result (only if non-empty — don't cache empty 429 responses)
+  if (merged.length > 0) {
+    listingCache.set(date, { matches: merged, expiresAt: Date.now() + CACHE_TTL_MS });
+  }
   return merged;
 }

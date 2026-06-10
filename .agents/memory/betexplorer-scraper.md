@@ -16,6 +16,36 @@ description: How betexplorer.com scraping works — API endpoints, market codes,
 - Both pages share the same `data-dt="D,M,YYYY,H,Min"` HTML structure — `parseResultsHtml` works on both.
 - Match IDs in URL: `/football/{country}/{league}/{home-away}/{matchId}/` — last segment is matchId.
 
+## CRITICAL: BetExplorer uses CET (UTC+2), not UTC — date filter must span +1 day
+
+BetExplorer's `data-dt` timestamps are in **CET (UTC+2 in summer)**. A match at 22:00 UTC on June 10 is stored as `data-dt="11,6,2026,0,00"` (midnight CET = 22:00 UTC). If you only filter for the UTC date (June 10), you miss all matches kicking off after ~22:00 UTC.
+
+**Fix:** `parseResultsHtml` takes a `Set<string>` of acceptable dates. `fetchBetExplorerMatches` always includes both the target date AND the next calendar day: `acceptDates = new Set([date, nextDate])`.
+
+The results page for a given day already contains 3 days of data, so the next-day entries are already in the HTML — no extra HTTP request needed.
+
+## CRITICAL: Accent normalization in `norm()` — use NFD decomposition
+
+StatsHub returns team names with Unicode accents ("Ceará", "Nacional Potosí", "Málaga"). BetExplorer stores ASCII-ified names ("Ceara", "Nacional Potosi", "Malaga"). The `norm()` function MUST apply NFD decomposition before stripping non-ASCII:
+
+```typescript
+function norm(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")  // strip combining marks: é→e, ó→o, etc.
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+```
+
+Without this, "Potosí" → "potos" (accent stripped as space → trailing space → "potos") instead of "potosi". This was the root cause of ~80% match-lookup failures for South American and European teams.
+
+## In-memory listing cache (20 min TTL)
+
+`fetchBetExplorerMatches` stores results in `listingCache: Map<string, {matches, expiresAt}>` keyed by the target date (ISO string). TTL = 20 minutes. Only cached if result is non-empty (don't cache 429/empty responses). This avoids re-fetching the 500KB results page for every `predict-live` call when multiple fixtures share the same date.
+
 ## Results page HTML parsing — critical notes
 **Parse href and team names independently** — a single combined regex that tries to capture both URL and team names in one shot breaks whenever the anchor has extra attributes, class names, or whitespace between `>` and the text. Correct approach:
 1. Extract href with `/href="(\/football\/[^"?#]+\/([a-zA-Z0-9]{4,24})\/?)"/` — permissive matchId (4–24 chars, no length assumption).
@@ -69,7 +99,10 @@ Key design decisions:
 - 429 responses OR "TypeError: fetch failed" (TCP RST) if requests are too rapid.
 - `fetchMatchMarkets` uses 5 s delay between markets (bulk processing, sequential).
 - `fetchKeyMarketsLive` fetches all 4 markets concurrently (live prediction, acceptable).
-- Results page is not rate limited; only per-match AJAX calls are.
+- Results/schedule listing page is not aggressively rate limited; per-match AJAX calls are.
+
+## BetExplorer league coverage — not universal
+BetExplorer covers major/notable leagues only (top European, South American, North American, Asian leagues). Lower-tier leagues (e.g. Bolivia División Profesional, lower US/Swedish leagues) may not be listed. Expect ~50-70% match rate across a typical StatsHub fixture list — the rest simply aren't on BetExplorer at all.
 
 ## Data storage
 Per-bookmaker entries stored in `processing_matches` columns:

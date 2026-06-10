@@ -60,12 +60,14 @@ router.post("/model/predict-live", async (req, res) => {
   // Live scrape — fetch team stats, player stats, and BetExplorer results in parallel
   try {
     const dateStr = new Date(kickoffTs * 1000).toISOString().slice(0, 10);
+    const beLog = (msg: string) => console.log(msg);
+    beLog(`[predict-live] ${homeTeam} vs ${awayTeam} — date=${dateStr} kickoffTs=${kickoffTs}`);
     const [homeStats, awayStats, homePlayers, awayPlayers, beMatches] = await Promise.allSettled([
       fetchStatsHubTeamHistory(homeTeamId, kickoffTs),
       fetchStatsHubTeamHistory(awayTeamId, kickoffTs),
       fetchPlayerStats(homeTeamId),
       fetchPlayerStats(awayTeamId),
-      fetchBetExplorerMatches(dateStr),
+      fetchBetExplorerMatches(dateStr, beLog),
     ]);
 
     const matchLike: Record<string, string | null> = {
@@ -78,7 +80,9 @@ router.post("/model/predict-live", async (req, res) => {
 
     // Try BetExplorer odds — fast concurrent fetch (no delays, no retry)
     if (beMatches.status === "fulfilled") {
+      beLog(`[BetExplorer] Total matches fetched: ${beMatches.value.length}`);
       const beMatch = findBestBEMatch(homeTeam, awayTeam, beMatches.value);
+      beLog(`[BetExplorer] Match lookup for "${homeTeam}" vs "${awayTeam}": ${beMatch ? `FOUND matchId=${beMatch.matchId}` : "NOT FOUND"}`);
       if (beMatch) {
         // Seed best 1x2 from results page immediately
         matchLike.po_1x2_json = JSON.stringify([{
