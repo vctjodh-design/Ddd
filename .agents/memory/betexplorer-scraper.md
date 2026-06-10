@@ -3,11 +3,17 @@ name: BetExplorer scraper
 description: How betexplorer.com scraping works — API endpoints, market codes, HTML parsing, rate-limit strategy.
 ---
 
-## Results page
-URL: `https://www.betexplorer.com/football/results/?year=YYYY&month=M&day=D`
-- `/soccer/results/` redirects to `/football/results/` (use the latter directly).
-- Returns 3 days of matches; filter by `data-dt="D,M,YYYY,H,Min"` for exact date.
-- Best 1X2 odds embedded as `data-odd="X"` on each match TR row.
+## Two BetExplorer page sources — BOTH required
+`fetchBetExplorerMatches` fetches **both** concurrently and merges by matchId:
+
+| Page | URL | Contains |
+|------|-----|----------|
+| Results | `/football/results/?year=YYYY&month=M&day=D` | Completed matches (with best 1x2 odds in `data-odd`) |
+| Schedule | `/football/?date=DD.MM.YYYY` (European format) | Upcoming/unplayed matches |
+
+- Without the schedule page, `predict-live` finds zero BetExplorer odds for any future fixture.
+- Results page takes precedence in dedup (it carries best-odds data that schedule page lacks).
+- Both pages share the same `data-dt="D,M,YYYY,H,Min"` HTML structure — `parseResultsHtml` works on both.
 - Match IDs in URL: `/football/{country}/{league}/{home-away}/{matchId}/` — last segment is matchId.
 
 ## Results page HTML parsing — critical notes

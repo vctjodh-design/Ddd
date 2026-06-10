@@ -389,8 +389,39 @@ function parseResultsHtml(html: string, targetDate: string): BEMatch[] {
   return results;
 }
 
+/** Fetch one BetExplorer page and parse it, returning [] on any error. */
+async function fetchAndParse(url: string, date: string, label: string, log?: (msg: string) => void): Promise<BEMatch[]> {
+  log?.(`[BetExplorer] Fetching ${label}: ${url}`);
+  try {
+    const resp = await torFetch(url, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-GB,en;q=0.9",
+        "Referer": `${BASE}/football/`,
+      },
+      redirect: "follow",
+      timeout: 20_000,
+    });
+    if (!resp.ok) {
+      log?.(`[BetExplorer] ${label} HTTP ${resp.status} — skipping`);
+      return [];
+    }
+    return parseResultsHtml(await resp.text(), date);
+  } catch (e) {
+    log?.(`[BetExplorer] ${label} fetch error: ${e} — skipping`);
+    return [];
+  }
+}
+
 /**
- * Fetch all matches for a given date from BetExplorer results page.
+ * Fetch all matches for a given date from BetExplorer.
+ * Combines two sources so both past (results page) and upcoming (schedule page)
+ * matches are covered — critical for live prediction on fixtures not yet played.
+ *
+ * Results page:  /football/results/?year=YYYY&month=M&day=D  (completed matches)
+ * Schedule page: /football/?date=DD.MM.YYYY                  (upcoming matches)
+ *
  * @param date  ISO "YYYY-MM-DD"
  */
 export async function fetchBetExplorerMatches(
@@ -398,25 +429,30 @@ export async function fetchBetExplorerMatches(
   log?: (msg: string) => void,
 ): Promise<BEMatch[]> {
   const [year, month, day] = date.split("-");
-  // Use /football/results/ directly (avoids 301 redirect from /soccer/results/)
-  const url = `${BASE}/football/results/?year=${year}&month=${Number(month)}&day=${Number(day)}`;
-  log?.(`[BetExplorer] Fetching results page: ${url}`);
 
-  const resp = await torFetch(url, {
-    headers: {
-      "User-Agent": UA,
-      "Accept": "text/html,application/xhtml+xml",
-      "Accept-Language": "en-GB,en;q=0.9",
-      "Referer": `${BASE}/football/`,
-    },
-    redirect: "follow",
-    timeout: 20_000,
-  });
-  if (!resp.ok) throw new Error(`BetExplorer HTTP ${resp.status}`);
+  // DD.MM.YYYY format for the schedule page
+  const ddmmyyyy = `${day.padStart(2, "0")}.${month.padStart(2, "0")}.${year}`;
 
-  const html     = await resp.text();
-  const matches  = parseResultsHtml(html, date);
-  const withOdds = matches.filter(m => m.bestHomeOdds !== null).length;
-  log?.(`[BetExplorer] ${matches.length} match(es) for ${date}, ${withOdds} with best odds`);
-  return matches;
+  const resultsUrl  = `${BASE}/football/results/?year=${year}&month=${Number(month)}&day=${Number(day)}`;
+  const scheduleUrl = `${BASE}/football/?date=${ddmmyyyy}`;
+
+  // Fetch both concurrently — schedule covers upcoming, results covers completed
+  const [resultMatches, scheduleMatches] = await Promise.all([
+    fetchAndParse(resultsUrl,  date, "results page",  log),
+    fetchAndParse(scheduleUrl, date, "schedule page", log),
+  ]);
+
+  // Merge, deduplicating by matchId (results page takes precedence — has odds)
+  const seen = new Set<string>();
+  const merged: BEMatch[] = [];
+  for (const m of [...resultMatches, ...scheduleMatches]) {
+    if (!seen.has(m.matchId)) {
+      seen.add(m.matchId);
+      merged.push(m);
+    }
+  }
+
+  const withOdds = merged.filter(m => m.bestHomeOdds !== null).length;
+  log?.(`[BetExplorer] ${merged.length} match(es) for ${date} (${resultMatches.length} results + ${scheduleMatches.length} scheduled), ${withOdds} with best odds`);
+  return merged;
 }
