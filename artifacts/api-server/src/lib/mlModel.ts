@@ -476,6 +476,12 @@ export interface PredictionOutput {
   };
   valueBets: Array<{ market: string; outcome: string; modelProb: number; impliedProb: number; edge: number; bestOdds: number | null }>;
   arbitrage: ArbOpportunity[];
+  rawOdds: {
+    onex2: Array<{ bookmaker: string; H: number | null; D: number | null; A: number | null }>;
+    btts:  Array<{ bookmaker: string; yes: number | null; no: number | null }>;
+    ou:    Array<{ bookmaker: string; line: number; over: number | null; under: number | null }>;
+    dc:    Array<{ bookmaker: string; "1X": number | null; X2: number | null; "12": number | null }>;
+  };
 }
 
 export function predictMatch(m: MatchLike): PredictionOutput {
@@ -609,6 +615,16 @@ export function predictMatch(m: MatchLike): PredictionOutput {
     ou:    ou,
   });
 
+  // ── Raw per-bookmaker odds ─────────────────────────────────────────────────
+  const rawOdds: PredictionOutput["rawOdds"] = {
+    onex2: ox.map(e => ({ bookmaker: e.bookmaker, H: e.odds[0] ?? null, D: e.odds[1] ?? null, A: e.odds[2] ?? null })),
+    btts:  ob.map(e => ({ bookmaker: e.bookmaker, yes: e.odds[0] ?? null, no: e.odds[1] ?? null })),
+    ou:    ou
+      .filter(e => e.line != null)
+      .map(e => ({ bookmaker: e.bookmaker, line: e.line as number, over: e.odds[0] ?? null, under: e.odds[1] ?? null })),
+    dc:    od.map(e => ({ bookmaker: e.bookmaker, "1X": e.odds[0] ?? null, X2: e.odds[1] ?? null, "12": e.odds[2] ?? null })),
+  };
+
   return {
     method, featureQuality,
     nSamples: state?.nSamples ?? 0,
@@ -619,7 +635,7 @@ export function predictMatch(m: MatchLike): PredictionOutput {
     lambdaAway: Math.round(poisson.lambdaAway * 100) / 100,
     onex2, dc, btts, corners,
     correctScores: poisson.correctScores,
-    bestOdds, impliedProbs, valueBets, arbitrage,
+    bestOdds, impliedProbs, valueBets, arbitrage, rawOdds,
   };
 }
 

@@ -123,25 +123,55 @@ function extractActiveLine(html: string): number | null {
 }
 
 /**
- * Parse bookmaker rows from the bestOdds endpoint HTML (tbody id="best-odds-0").
- * All markets use a flat table — no line-based tbody grouping.
- * For O/U markets, pass defaultLine so entries carry the correct line value.
+ * Parse bookmaker rows from market HTML returned by the bestOdds endpoint.
+ *
+ * Non-line markets (1X2, BTTS, DC, DNB):
+ *   Flat table — scan all <tr> elements with data-odd.
+ *
+ * Line markets (O/U, AH):
+ *   The bestOdds endpoint returns ALL lines in one response, grouped under
+ *   <tbody id="best-odds-{line}"> sections (e.g. "best-odds-1.50", "best-odds-2.25").
+ *   Non-numeric IDs like "best-odds-ou" are the aggregated best-across-lines row
+ *   and are skipped to avoid duplicates.
+ *
+ * Each <tr> has 2 <td> anchors with 'event-name' (mobile + desktop views).
+ * extractBookmakerName uses .match() to get only the FIRST occurrence.
  */
-function parseMarketHtml(html: string, defaultLine?: number): BEBookmakerEntry[] {
+function parseMarketHtml(html: string, isLineMarket: boolean): BEBookmakerEntry[] {
   const results: BEBookmakerEntry[] = [];
-  const trPat = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-  let tr: RegExpExecArray | null;
-  while ((tr = trPat.exec(html)) !== null) {
-    const content = tr[1];
-    if (!content.includes("data-odd")) continue;
-    const odds = extractOddsFromTr(content);
-    if (odds.length < 2) continue;
-    results.push({
-      bookmaker: extractBookmakerName(content),
-      odds,
-      ...(defaultLine !== undefined ? { line: defaultLine } : {}),
-    });
+
+  if (isLineMarket) {
+    // Split by <tbody id="best-odds-{line}"> or legacy <tbody id="all-odds-{line}">
+    const sections = html.split(/<tbody[^>]+id="(?:best-odds|all-odds)-([^"]+)"/g);
+    // sections: [pre, lineId1, content1, lineId2, content2, ...]
+    for (let i = 1; i < sections.length; i += 2) {
+      const lineId  = sections[i];
+      const sectionHtml = sections[i + 1] ?? "";
+      const lineVal = parseFloat(lineId);
+      if (isNaN(lineVal)) continue; // skip "ou", "ah", etc. aggregate rows
+
+      const trPat = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+      let tr: RegExpExecArray | null;
+      while ((tr = trPat.exec(sectionHtml)) !== null) {
+        const content = tr[1];
+        if (!content.includes("data-odd")) continue;
+        const odds = extractOddsFromTr(content);
+        if (odds.length < 2) continue;
+        results.push({ bookmaker: extractBookmakerName(content), odds, line: lineVal });
+      }
+    }
+  } else {
+    const trPat = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+    let tr: RegExpExecArray | null;
+    while ((tr = trPat.exec(html)) !== null) {
+      const content = tr[1];
+      if (!content.includes("data-odd")) continue;
+      const odds = extractOddsFromTr(content);
+      if (odds.length < 2) continue;
+      results.push({ bookmaker: extractBookmakerName(content), odds });
+    }
   }
+
   return results;
 }
 
@@ -186,8 +216,7 @@ async function fetchMarketOnce(
     oddsHtml = text;
   }
   // For line markets, extract the active line from the nav tabs (default is 2.5 for O/U)
-  const defaultLine = isLineMarket ? (extractActiveLine(oddsHtml) ?? undefined) : undefined;
-  return { entries: parseMarketHtml(oddsHtml, defaultLine), status: 200 };
+  return { entries: parseMarketHtml(oddsHtml, isLineMarket), status: 200 };
 }
 
 /**

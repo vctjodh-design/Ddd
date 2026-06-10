@@ -884,6 +884,10 @@ interface CornerPred { predicted: number; over85: number; over95: number; over10
 interface BestOdds { H?: number; D?: number; A?: number; yes?: number; no?: number; "1X"?: number; "12"?: number; X2?: number }
 interface ArbLeg { outcome: string; bookmaker: string; odds: number; stakePercent: number }
 interface ArbOpportunity { market: string; impliedSum: number; profitPct: number; legs: ArbLeg[] }
+interface RawOdds1X2 { bookmaker: string; H: number | null; D: number | null; A: number | null }
+interface RawOddsBTTS { bookmaker: string; yes: number | null; no: number | null }
+interface RawOddsOU { bookmaker: string; line: number; over: number | null; under: number | null }
+interface RawOddsDC { bookmaker: string; "1X": number | null; X2: number | null; "12": number | null }
 interface FixturePrediction {
   method: string; featureQuality: string;
   onex2: ProbMap; dc: { "1X": number; "12": number; X2: number };
@@ -893,6 +897,180 @@ interface FixturePrediction {
   lambdaHome: number; lambdaAway: number;
   bestOdds: BestOdds;
   impliedProbs: { H?: number; D?: number; A?: number; yes?: number; no?: number };
+  rawOdds?: {
+    onex2: RawOdds1X2[];
+    btts:  RawOddsBTTS[];
+    ou:    RawOddsOU[];
+    dc:    RawOddsDC[];
+  };
+}
+
+// ─── Bookmaker Odds Table ─────────────────────────────────────────────────────
+
+type RawOddsAll = NonNullable<FixturePrediction["rawOdds"]>;
+
+function OddsCell({ v }: { v: number | null }) {
+  if (v === null || v === undefined) return <td className="text-right text-muted-foreground/25 text-[10px] font-mono px-2 py-1">—</td>;
+  return <td className="text-right text-[10px] font-mono font-bold text-foreground/80 px-2 py-1">{v.toFixed(2)}</td>;
+}
+
+function BookmakerOddsTable({ rawOdds }: { rawOdds: RawOddsAll }) {
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<"1X2" | "BTTS" | "O/U" | "DC">("1X2");
+
+  const tabs: Array<{ id: typeof tab; count: number }> = [
+    { id: "1X2",  count: rawOdds.onex2.length },
+    { id: "BTTS", count: rawOdds.btts.length },
+    { id: "O/U",  count: [...new Set(rawOdds.ou.map(e => e.bookmaker))].length },
+    { id: "DC",   count: rawOdds.dc.length },
+  ].filter(t => t.count > 0) as Array<{ id: typeof tab; count: number }>;
+
+  // For O/U: group by bookmaker, then list each line
+  const ouByBookmaker = rawOdds.ou.reduce<Record<string, RawOddsOU[]>>((acc, e) => {
+    (acc[e.bookmaker] ??= []).push(e);
+    return acc;
+  }, {});
+  const ouLines = [...new Set(rawOdds.ou.map(e => e.line))].sort((a, b) => a - b);
+
+  return (
+    <div className="border border-border/30 bg-card/20">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-3 py-2 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/60 hover:text-foreground/60 transition-colors"
+      >
+        <span className="flex items-center gap-2">
+          <span className="text-muted-foreground/40">▸</span>
+          Bookmaker Odds Breakdown
+          <span className="text-muted-foreground/30">
+            ({rawOdds.onex2.length + rawOdds.btts.length + [...new Set(rawOdds.ou.map(e => e.bookmaker))].length + rawOdds.dc.length} entries)
+          </span>
+        </span>
+        <span className={`transition-transform duration-200 ${open ? "rotate-90" : ""}`}>▶</span>
+      </button>
+
+      {open && (
+        <div className="border-t border-border/20">
+          {/* Market tabs */}
+          <div className="flex border-b border-border/20">
+            {tabs.map(t => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`px-3 py-1.5 text-[9px] font-mono uppercase tracking-wider transition-colors ${
+                  tab === t.id
+                    ? "text-primary border-b border-primary"
+                    : "text-muted-foreground/40 hover:text-muted-foreground/70"
+                }`}
+              >
+                {t.id} <span className="text-muted-foreground/30">({t.count})</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="overflow-x-auto max-h-56 overflow-y-auto" style={{ scrollbarWidth: "thin" }}>
+            {tab === "1X2" && rawOdds.onex2.length > 0 && (
+              <table className="w-full text-[10px]">
+                <thead className="sticky top-0 bg-card/90">
+                  <tr className="border-b border-border/20">
+                    <th className="text-left text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">Bookmaker</th>
+                    <th className="text-right text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">1</th>
+                    <th className="text-right text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">X</th>
+                    <th className="text-right text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">2</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rawOdds.onex2.map((e, i) => (
+                    <tr key={i} className="border-b border-border/10 hover:bg-muted/5">
+                      <td className="text-left text-[10px] font-mono text-muted-foreground/70 px-2 py-1">{e.bookmaker}</td>
+                      <OddsCell v={e.H} />
+                      <OddsCell v={e.D} />
+                      <OddsCell v={e.A} />
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {tab === "BTTS" && rawOdds.btts.length > 0 && (
+              <table className="w-full text-[10px]">
+                <thead className="sticky top-0 bg-card/90">
+                  <tr className="border-b border-border/20">
+                    <th className="text-left text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">Bookmaker</th>
+                    <th className="text-right text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">Yes</th>
+                    <th className="text-right text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">No</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rawOdds.btts.map((e, i) => (
+                    <tr key={i} className="border-b border-border/10 hover:bg-muted/5">
+                      <td className="text-left text-[10px] font-mono text-muted-foreground/70 px-2 py-1">{e.bookmaker}</td>
+                      <OddsCell v={e.yes} />
+                      <OddsCell v={e.no} />
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {tab === "O/U" && rawOdds.ou.length > 0 && (
+              <table className="w-full text-[10px]">
+                <thead className="sticky top-0 bg-card/90">
+                  <tr className="border-b border-border/20">
+                    <th className="text-left text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">Bookmaker</th>
+                    {ouLines.map(l => (
+                      <React.Fragment key={l}>
+                        <th className="text-right text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">O{l}</th>
+                        <th className="text-right text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">U{l}</th>
+                      </React.Fragment>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(ouByBookmaker).map(([bookie, entries]) => (
+                    <tr key={bookie} className="border-b border-border/10 hover:bg-muted/5">
+                      <td className="text-left text-[10px] font-mono text-muted-foreground/70 px-2 py-1">{bookie}</td>
+                      {ouLines.map(l => {
+                        const e = entries.find(x => Math.abs(x.line - l) < 0.01);
+                        return (
+                          <React.Fragment key={l}>
+                            <OddsCell v={e?.over ?? null} />
+                            <OddsCell v={e?.under ?? null} />
+                          </React.Fragment>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            {tab === "DC" && rawOdds.dc.length > 0 && (
+              <table className="w-full text-[10px]">
+                <thead className="sticky top-0 bg-card/90">
+                  <tr className="border-b border-border/20">
+                    <th className="text-left text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">Bookmaker</th>
+                    <th className="text-right text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">1X</th>
+                    <th className="text-right text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">X2</th>
+                    <th className="text-right text-muted-foreground/50 font-mono font-normal px-2 py-1 uppercase tracking-wider">12</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rawOdds.dc.map((e, i) => (
+                    <tr key={i} className="border-b border-border/10 hover:bg-muted/5">
+                      <td className="text-left text-[10px] font-mono text-muted-foreground/70 px-2 py-1">{e.bookmaker}</td>
+                      <OddsCell v={e["1X"]} />
+                      <OddsCell v={e.X2} />
+                      <OddsCell v={e["12"]} />
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Fixture Prediction Panel ─────────────────────────────────────────────────
@@ -1152,6 +1330,11 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
               ))}
             </div>
           </div>
+
+          {/* ── Bookmaker Odds Table ── */}
+          {pred.rawOdds && (pred.rawOdds.onex2.length > 0 || pred.rawOdds.btts.length > 0 || pred.rawOdds.ou.length > 0 || pred.rawOdds.dc.length > 0) && (
+            <BookmakerOddsTable rawOdds={pred.rawOdds} />
+          )}
 
           {/* ── Poisson debug ── */}
           <div className="text-[9px] font-mono text-muted-foreground/30 border-t border-border/20 pt-2">
