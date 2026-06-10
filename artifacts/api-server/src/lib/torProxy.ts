@@ -54,6 +54,8 @@ function spawnTor(): Promise<void> {
       "--SocksPort",    String(SOCKS_PORT),
       "--ControlPort",  String(CONTROL_PORT),
       "--CookieAuthentication", "0",   // no auth — loopback only
+      "--ExcludeExitNodes", "{US}",    // never exit through US IPs
+      "--StrictNodes",  "1",           // enforce the exclusion strictly
       "--Log", "notice stderr",
     ], { stdio: ["ignore", "ignore", "pipe"] });
 
@@ -137,7 +139,7 @@ function startBootstrap(): Promise<void> {
       return;
     }
 
-    logger.info("[TorProxy] Starting Tor (no StrictNodes — circuit rotation for EU exit)…");
+    logger.info("[TorProxy] Starting Tor (ExcludeExitNodes={US}, StrictNodes=1)…");
     try {
       await spawnTor();
     } catch (err) {

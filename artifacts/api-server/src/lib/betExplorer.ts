@@ -341,17 +341,33 @@ function parseResultsHtml(html: string, targetDate: string): BEMatch[] {
     const min   = dtParts[4].padStart(2, "0");
     if (day !== tDay || month !== tMonth || year !== tYear) continue;
 
-    // Match URL + team names
-    // href="/football/{country}/{league}/{home-away}/{matchId}/"
-    const linkM = content.match(
-      /href="(\/football\/[^"]+\/([a-zA-Z0-9]{6,12})\/)"[^>]*>(<strong>)?([^<]+?)(<\/strong>)?\s*-\s*([^<]+?)\s*(?:<|$)/
-    );
-    if (!linkM) continue;
+    // Match URL — href="/football/{country}/{league}/{home-away}/{matchId}/"
+    // matchId is the last pure-alphanumeric path segment (no dashes).
+    // Parse href and team names independently so extra anchor attributes / tags
+    // between href and the text node don't break the whole match.
+    const hrefM = content.match(/href="(\/football\/[^"?#]+\/([a-zA-Z0-9]{4,24})\/?)"/);
+    if (!hrefM) continue;
 
-    const matchUrl    = `${BASE}${linkM[1]}`;
-    const matchId     = linkM[2];
-    let   homeTeam    = linkM[4].trim();
-    let   awayTeam    = linkM[6].trim().replace(/<.*/, "").trim();
+    const matchPath = hrefM[1].endsWith("/") ? hrefM[1] : hrefM[1] + "/";
+    const matchUrl  = `${BASE}${matchPath}`;
+    const matchId   = hrefM[2];
+
+    // Team names: grab everything inside the <a> and strip tags
+    const anchorBodyM = content.match(/href="\/football\/[^"]+"\s*[^>]*>([\s\S]*?)<\/a>/);
+    if (!anchorBodyM) continue;
+    const anchorText = anchorBodyM[1]
+      .replace(/<[^>]+>/g, " ")   // strip inner tags
+      .replace(/&amp;/g, "&")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&#[^;]+;/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // BetExplorer uses " - " as the separator between home and away
+    const dashIdx = anchorText.indexOf(" - ");
+    if (dashIdx <= 0) continue;
+    let homeTeam = anchorText.slice(0, dashIdx).trim();
+    let awayTeam = anchorText.slice(dashIdx + 3).trim();
 
     if (!homeTeam || !awayTeam || homeTeam.length > 80 || awayTeam.length > 80) continue;
 

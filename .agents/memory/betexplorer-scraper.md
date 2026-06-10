@@ -10,6 +10,11 @@ URL: `https://www.betexplorer.com/football/results/?year=YYYY&month=M&day=D`
 - Best 1X2 odds embedded as `data-odd="X"` on each match TR row.
 - Match IDs in URL: `/football/{country}/{league}/{home-away}/{matchId}/` — last segment is matchId.
 
+## Results page HTML parsing — critical notes
+**Parse href and team names independently** — a single combined regex that tries to capture both URL and team names in one shot breaks whenever the anchor has extra attributes, class names, or whitespace between `>` and the text. Correct approach:
+1. Extract href with `/href="(\/football\/[^"?#]+\/([a-zA-Z0-9]{4,24})\/?)"/` — permissive matchId (4–24 chars, no length assumption).
+2. Extract anchor inner HTML separately with `/href="\/football\/[^"]+"\s*[^>]*>([\s\S]*?)<\/a>/`, then strip tags, decode HTML entities, and split on `" - "` for home/away.
+
 ## Per-bookmaker odds API — TWO endpoints, only one returns all bookmakers
 
 ### ✅ bestOdds endpoint (ALL bookmakers — use this one)
@@ -49,11 +54,10 @@ BetExplorer geo-filters the bestOdds endpoint by visitor IP:
 
 `torProxy.ts` (in `api-server/src/lib/`) routes all BetExplorer fetches through Tor SOCKS5.
 Key design decisions:
-- **No StrictNodes** — fast ~7s bootstrap. StrictNodes+EU gets stuck at 50% descriptor loading for 3+ minutes.
-- **Circuit rotation via control port**: after bootstrap, check exit IP via `ipapi.co/country/` through SOCKS5. If non-EU, send `SIGNAL NEWNYM` on port 9051 and retry (max 12 attempts, 4s delay between).
-- **Eager init at module load**: `startBootstrap()` called immediately so Tor is ready before any processing job starts.
+- **`ExcludeExitNodes {US}` + `StrictNodes 1`** — prevents US circuits at the Tor OS level. Bootstrap stays fast because excluding only US still leaves the vast majority of exit nodes available (unlike positive ExitNodes which severely limits the pool).
+- **Circuit rotation via control port still present**: after bootstrap, verifies exit IP via `ipapi.co/country/` through SOCKS5. If non-EU for any reason, sends `SIGNAL NEWNYM` on port 9051 and retries (max 12 attempts, 4s delay).
 - **`CookieAuthentication 0`** on control port (loopback only, no auth needed).
-- First circuit is EU in the vast majority of cases (SE, DE, NL etc.) — typically 0 retries needed.
+- **WARNING**: do NOT use `ExitNodes {FR},{DE},...` + `StrictNodes 1` — that severely restricts the exit pool and gets stuck at ~50% descriptor loading for 3+ minutes.
 
 ## Rate limiting
 - 429 responses OR "TypeError: fetch failed" (TCP RST) if requests are too rapid.
