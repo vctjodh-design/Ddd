@@ -10,13 +10,20 @@ URL: `https://www.betexplorer.com/football/results/?year=YYYY&month=M&day=D`
 - Best 1X2 odds embedded as `data-odd="X"` on each match TR row.
 - Match IDs in URL: `/football/{country}/{league}/{home-away}/{matchId}/` — last segment is matchId.
 
-## Root nav URL (browser only — fewer results)
-`https://www.betexplorer.com/?year=YYYY&month=MM&day=DD`
-Use `/football/results/` for scraping; root URL is for browser navigation only.
+## Per-bookmaker odds API — TWO endpoints, only one returns all bookmakers
 
-## Per-bookmaker odds API (discovered from all.min.js `match_init`)
+### ✅ bestOdds endpoint (ALL bookmakers — use this one)
+URL: `https://www.betexplorer.com/match-odds/{matchId}/1/{apiCode}/bestOdds/?lang=en`
+- Returns JSON: `{"odds": "<HTML table>"}`.
+- **From US IPs**: returns 2 US bookmakers (BetMGM.us, Stake.com).
+- **From EU IPs**: returns 15+ international bookmakers (1xBet, 888sport, Betfair, BetInAsia, etc.).
+- Single `tbody id="best-odds-0"` — flat table, no line grouping.
+- For O/U/AH: shows one line at a time; active line in nav: `<li id="2.50" class="...oddsComparison__activeSubLi...">`.
+
+### ❌ odds endpoint (geo-filtered — do NOT use)
 URL: `https://www.betexplorer.com/match-odds/{matchId}/0/{apiCode}/odds/?lang=en`
-Returns JSON: `{"odds": "<HTML table>"}`.
+- From US IPs: only returns Stake.com (1 bookmaker).
+- tbody uses `all-odds-{line}` grouping for O/U/AH (multiple lines per response).
 
 **Market API codes** (differ from UI labels in some cases):
 | Market | API code |
@@ -28,19 +35,17 @@ Returns JSON: `{"odds": "<HTML table>"}`.
 | DC     | `dc`     |
 | BTTS   | `bts`    | ← NOT "btts"
 
-## HTML parsing
-- Bookmaker name: `event-name': '...'` in onclick attribute of `<a>` in TR.
-- Odds values: `data-odd="X"` attributes on each TD in the TR (in column order).
-- O/U and AH lines: `<tbody id="all-odds-{line}">` groups rows by line (e.g. `all-odds-0.50`, `all-odds-1.50`).
-- Non-line markets (1x2, DNB, DC, BTTS): flat table, no tbody grouping.
+## HTML parsing (bestOdds endpoint)
+- Bookmaker name: FIRST `event-name': '...'` in onclick attribute in each `<tr>` (each TR has 2 occurrences — mobile + desktop columns — take only the first).
+- Odds values: `data-odd="X"` attributes on TD cells (in column order: Home/Yes/Over first).
+- All markets: flat table (no tbody line-grouping).
+- O/U active line: `extractActiveLine(html)` reads `id="2.50"` from activeSubLi nav class.
 
 ## Rate limiting
 - 429 responses OR "TypeError: fetch failed" (TCP RST) if requests are too rapid.
-- Use 1800 ms delay between markets.
-- Retry 3× with 3 s × attempt back-off on network errors.
-- Results page (single large HTML) is not rate limited; only per-match AJAX calls are.
-
-**Why:** BetExplorer enforces per-IP rate limits on the `/match-odds/` endpoint, especially for `ou`/`ha`/`bts` market codes (possibly heavier backend load). Alternating 900 ms delays caused every other request to fail; 1800 ms + retries resolved it.
+- `fetchMatchMarkets` uses 5 s delay between markets (bulk processing, sequential).
+- `fetchKeyMarketsLive` fetches all 4 markets concurrently (live prediction, acceptable).
+- Results page is not rate limited; only per-match AJAX calls are.
 
 ## Data storage
 Per-bookmaker entries stored in `processing_matches` columns:

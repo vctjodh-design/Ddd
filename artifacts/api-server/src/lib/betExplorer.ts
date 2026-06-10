@@ -6,11 +6,13 @@
  *   Filters by data-dt="D,M,YYYY,..." for exact date matching
  *
  * Phase 2 (per-match): fetch per-bookmaker odds for 6 markets via AJAX API
- *   URL: /match-odds/{matchId}/0/{apiCode}/odds/?lang=en  → JSON { odds: "<HTML>" }
- *   tbody id="all-odds-{line}" encodes O/U / AH line values
+ *   URL: /match-odds/{matchId}/1/{apiCode}/bestOdds/?lang=en  → JSON { odds: "<HTML>" }
+ *   NOTE: /1/ + bestOdds returns ALL bookmakers regardless of IP geo-location.
+ *         /0/ + odds was the geo-filtered endpoint (only 1 bookie from US IPs).
+ *   tbody id="best-odds-0" contains all bookmaker rows.
+ *   O/U active line is read from the nav: <li id="2.50" class="...activeSubLi...">
  *
- * API codes (discovered from all.min.js match_change_bettype):
- *   1x2=1x2  ou=ou  ah=ah  DNB=ha  DC=dc  BTTS=bts
+ * API codes:  1x2=1x2  ou=ou  ah=ah  DNB=ha  DC=dc  BTTS=bts
  */
 
 import type { ProcessingLog } from "./db.js";
@@ -111,77 +113,58 @@ function extractOddsFromTr(trHtml: string): (number | null)[] {
 }
 
 /**
- * Parse bookmaker rows from market HTML (returned inside JSON .odds field).
- * The O/U and AH markets group rows under <tbody id="all-odds-{line}"> elements.
+ * Extract the currently active O/U line from the bestOdds nav HTML.
+ * The active tab has class "oddsComparison__activeSubLi" and id="2.50" etc.
  */
-function parseMarketHtml(
-  html: string,
-  hasLine: boolean,
-): BEBookmakerEntry[] {
+function extractActiveLine(html: string): number | null {
+  const m = html.match(/id="(\d+\.\d+)"[^>]*oddsComparison__activeSubLi/)
+         ?? html.match(/oddsComparison__activeSubLi[^>]*id="(\d+\.\d+)"/);
+  return m ? parseFloat(m[1]) : null;
+}
+
+/**
+ * Parse bookmaker rows from the bestOdds endpoint HTML (tbody id="best-odds-0").
+ * All markets use a flat table — no line-based tbody grouping.
+ * For O/U markets, pass defaultLine so entries carry the correct line value.
+ */
+function parseMarketHtml(html: string, defaultLine?: number): BEBookmakerEntry[] {
   const results: BEBookmakerEntry[] = [];
-
-  if (hasLine) {
-    // Split by tbody id="all-odds-{line}"
-    const sections = html.split(/<tbody[^>]+id="all-odds-([^"]+)"/g);
-    // sections: [pre, line1, content1, line2, content2, ...]
-    for (let i = 1; i < sections.length; i += 2) {
-      const lineStr = sections[i];
-      const sectionHtml = sections[i + 1] ?? "";
-      const lineVal = parseFloat(lineStr);
-      if (isNaN(lineVal)) continue;
-
-      // Parse TR rows in this section
-      const trPat = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-      let tr: RegExpExecArray | null;
-      while ((tr = trPat.exec(sectionHtml)) !== null) {
-        const content = tr[1];
-        if (!content.includes("data-odd")) continue;
-        const odds = extractOddsFromTr(content);
-        if (odds.length < 2) continue;
-        results.push({
-          bookmaker: extractBookmakerName(content),
-          odds,
-          line: lineVal,
-        });
-      }
-    }
-  } else {
-    // No line grouping — flat table
-    const trPat = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-    let tr: RegExpExecArray | null;
-    while ((tr = trPat.exec(html)) !== null) {
-      const content = tr[1];
-      if (!content.includes("data-odd")) continue;
-      const odds = extractOddsFromTr(content);
-      if (odds.length < 2) continue;
-      results.push({
-        bookmaker: extractBookmakerName(content),
-        odds,
-      });
-    }
+  const trPat = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+  let tr: RegExpExecArray | null;
+  while ((tr = trPat.exec(html)) !== null) {
+    const content = tr[1];
+    if (!content.includes("data-odd")) continue;
+    const odds = extractOddsFromTr(content);
+    if (odds.length < 2) continue;
+    results.push({
+      bookmaker: extractBookmakerName(content),
+      odds,
+      ...(defaultLine !== undefined ? { line: defaultLine } : {}),
+    });
   }
-
   return results;
 }
 
 // ── Per-match odds API ─────────────────────────────────────────────────────────
 
-const MARKETS: Array<{ label: keyof BEMatchMarkets; apiCode: string; hasLine: boolean }> = [
-  { label: "1x2",  apiCode: "1x2", hasLine: false },
-  { label: "ou",   apiCode: "ou",  hasLine: true  },
-  { label: "ah",   apiCode: "ah",  hasLine: true  },
-  { label: "dnb",  apiCode: "ha",  hasLine: false },  // Draw No Bet → code "ha"
-  { label: "dc",   apiCode: "dc",  hasLine: false },
-  { label: "btts", apiCode: "bts", hasLine: false },  // BTTS → code "bts"
+// isLineMarket: O/U and AH show one line at a time; active line is read from HTML nav.
+const MARKETS: Array<{ label: keyof BEMatchMarkets; apiCode: string; isLineMarket: boolean }> = [
+  { label: "1x2",  apiCode: "1x2", isLineMarket: false },
+  { label: "ou",   apiCode: "ou",  isLineMarket: true  },
+  { label: "ah",   apiCode: "ah",  isLineMarket: true  },
+  { label: "dnb",  apiCode: "ha",  isLineMarket: false },
+  { label: "dc",   apiCode: "dc",  isLineMarket: false },
+  { label: "btts", apiCode: "bts", isLineMarket: false },
 ];
 
 async function fetchMarketOnce(
   matchId: string,
   matchUrl: string,
   apiCode: string,
-  hasLine: boolean,
+  isLineMarket: boolean,
 ): Promise<{ entries: BEBookmakerEntry[]; status: number }> {
-  const url = `${BASE}/match-odds/${matchId}/0/${apiCode}/odds/?lang=en`;
+  // /1/ + bestOdds = all bookmakers, no geo-filter.  /0/ + odds = US-only (1 bookie).
+  const url = `${BASE}/match-odds/${matchId}/1/${apiCode}/bestOdds/?lang=en`;
   const resp = await fetch(url, {
     headers: {
       "User-Agent": UA,
@@ -194,17 +177,17 @@ async function fetchMarketOnce(
     signal: AbortSignal.timeout(25_000),
   });
   if (!resp.ok) return { entries: [], status: resp.status };
-  // BetExplorer returns JSON { odds: "<html>" } for all markets
   const text = await resp.text();
   let oddsHtml = "";
   try {
     const json = JSON.parse(text) as { odds?: string };
     oddsHtml = json.odds ?? "";
   } catch {
-    // Some markets return plain HTML directly
     oddsHtml = text;
   }
-  return { entries: parseMarketHtml(oddsHtml, hasLine), status: 200 };
+  // For line markets, extract the active line from the nav tabs (default is 2.5 for O/U)
+  const defaultLine = isLineMarket ? (extractActiveLine(oddsHtml) ?? undefined) : undefined;
+  return { entries: parseMarketHtml(oddsHtml, defaultLine), status: 200 };
 }
 
 /**
@@ -215,13 +198,13 @@ async function fetchMarket(
   matchId: string,
   matchUrl: string,
   apiCode: string,
-  hasLine: boolean,
+  isLineMarket: boolean,
   log?: (msg: string) => void,
 ): Promise<BEBookmakerEntry[]> {
   const delays = [5000, 12000, 25000];
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const { entries, status } = await fetchMarketOnce(matchId, matchUrl, apiCode, hasLine);
+      const { entries, status } = await fetchMarketOnce(matchId, matchUrl, apiCode, isLineMarket);
       if (status === 429) {
         const wait = delays[attempt] ?? 30000;
         log?.(`    [BE] ${apiCode.toUpperCase()} rate-limited (429) — waiting ${wait / 1000}s…`);
@@ -250,27 +233,23 @@ export async function fetchMatchMarkets(
 
   for (const mkt of MARKETS) {
     try {
-      const entries = await fetchMarket(matchId, matchUrl, mkt.apiCode, mkt.hasLine, log);
+      const entries = await fetchMarket(matchId, matchUrl, mkt.apiCode, mkt.isLineMarket, log);
       result[mkt.label] = entries;
-      // Count unique bookmakers for the log
       const uniqueBooks = new Set(entries.map(e => e.bookmaker)).size;
-      const lineInfo = mkt.hasLine
-        ? `, lines: ${[...new Set(entries.map(e => e.line))].sort((a, b) => (a ?? 0) - (b ?? 0)).join("/")}`
-        : "";
+      const lines = [...new Set(entries.map(e => e.line).filter(Boolean))].sort((a, b) => (a as number) - (b as number));
+      const lineInfo = lines.length ? `, line ${lines.join("/")}` : "";
       log?.(`    [BE] ${mkt.label.toUpperCase()}: ${entries.length} entries (${uniqueBooks} bookmaker${uniqueBooks !== 1 ? "s" : ""}${lineInfo})`);
     } catch (e) {
       log?.(`    [BE] ${mkt.label.toUpperCase()} failed: ${e}`);
     }
-    // 5 s between markets to avoid 429 — BetExplorer is strict about this
     await sleep(5000);
   }
   return result;
 }
 
 /**
- * Fetch key markets (1x2, ou, btts, dc) concurrently with no delays or retries.
+ * Fetch key markets (1x2, ou, btts, dc) concurrently — no delays, no retries.
  * Used for live/on-demand predictions where speed matters more than completeness.
- * Returns partial results — missing markets are simply absent from the output.
  */
 export async function fetchKeyMarketsLive(
   matchId: string,
