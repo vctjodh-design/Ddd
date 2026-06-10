@@ -4,8 +4,10 @@ description: How to make better-sqlite3 work in Replit — correct node target i
 ---
 
 The binary must be compiled targeting the exact same Node.js that the API server runtime uses. Replit has two Node.js versions in the nix store simultaneously:
-- `nodejs-20.20.0` — used by the API server workflow (`node` in PATH)
-- `nodejs-24.12.0` — used by pnpm internally
+- `nodejs-20.11.1` — used by the API server workflow (`node` in PATH); nix path: `/nix/store/0akvkk9k1a7z5vjp34yz6dr91j776jhv-nodejs-20.11.1`
+- `nodejs-24.x` — used by pnpm internally
+
+**CRITICAL: `pnpm install --ignore-scripts` also destroys the binary.** Even though it skips install scripts, pnpm reconstructs the node_modules layout and removes the compiled build. Always rebuild after ANY pnpm install invocation.
 
 **The ABI trap:** `pnpm install` runs the `better-sqlite3` install script via pnpm's own node (Node.js 24), so the binary gets compiled for Node.js 24. But the API server runs `node` from PATH (Node.js 20). This causes a fatal `undefined symbol: _ZN2v812api_internal33ConvertToJSGlobalProxyIfNecessaryEm` error at runtime — a V8 ABI mismatch.
 
@@ -22,7 +24,7 @@ rm -rf node_modules/.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3/bui
 #    Find the correct path: ps aux | grep "dist/index" — note the nodejs-XX.XX path
 cd node_modules/.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3
 CFLAGS="-O0" CXXFLAGS="-O0" node-gyp rebuild \
-  --nodedir=/nix/store/jfar9wnj6kvr0gr6klh1gk7vgckkfr5j-nodejs-20.20.0
+  --nodedir=/nix/store/0akvkk9k1a7z5vjp34yz6dr91j776jhv-nodejs-20.11.1
 
 # 4. Restart the api-server workflow
 ```
