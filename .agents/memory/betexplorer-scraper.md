@@ -3,6 +3,15 @@ name: BetExplorer scraper
 description: How betexplorer.com scraping works — API endpoints, market codes, HTML parsing, rate-limit strategy.
 ---
 
+## Tor soft-block detection (mid-session circuit rotation)
+BetExplorer doesn't hard-block EU Tor exits — it **soft-blocks** some nodes by returning only 2-3 bookmakers instead of 10-17. The country check at startup is insufficient because the block is per-node, not per-country.
+
+Fix: after fetching 1x2 odds, count unique bookmakers. If `< MIN_BOOKS_1X2` (6), rotate the circuit (`SIGNAL NEWNYM`, wait 8s) and retry all markets. Applied to both `fetchMatchMarkets` (full processing jobs) and `fetchKeyMarketsLive` (live prediction endpoint). Max 2 retries — on failure it accepts whatever it got.
+
+Log lines to watch for:
+- `⚠ Only N bookmakers (soft-blocked exit node) — rotating Tor circuit…`
+- `Circuit rotation succeeded — N bookmakers on attempt 2`
+
 ## Two BetExplorer page sources — BOTH required
 `fetchBetExplorerMatches` fetches **both** concurrently and merges by matchId:
 

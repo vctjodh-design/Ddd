@@ -15,7 +15,14 @@
  */
 
 import type { ProcessingLog } from "./db.js";
-import { torFetch } from "./torProxy.js";
+import { torFetch, rotateCircuit } from "./torProxy.js";
+
+/**
+ * Minimum number of 1x2 bookmakers considered a "full" response from BetExplorer.
+ * A good EU Tor exit node typically returns 10-17 bookmakers.
+ * A soft-blocked or US node returns 2-3. Threshold set at 6 to be conservative.
+ */
+const MIN_BOOKS_1X2 = 6;
 
 const BASE = "https://www.betexplorer.com";
 const UA =
@@ -291,23 +298,15 @@ async function fetchMarket(
   return [];
 }
 
-/**
- * Fetch all 6 per-bookmaker markets for a match concurrently.
- * All markets are fired in parallel; each handles its own 429 retry/back-off.
- * A small stagger (500 ms between launches) avoids a simultaneous burst hitting
- * BetExplorer's rate-limit on the very first attempt.
- */
-export async function fetchMatchMarkets(
+/** Inner: fetch all 6 markets once and return the populated result object. */
+async function fetchAllMarketsOnce(
   matchId: string,
-  matchUrl?: string,
+  url: string,
+  result: BEMatchMarkets,
   log?: (msg: string) => void,
-): Promise<BEMatchMarkets> {
-  const result: BEMatchMarkets = { "1x2": [], ou: [], ah: [], dnb: [], dc: [], btts: [] };
-  const url = matchUrl ?? "";
-
+): Promise<void> {
   await Promise.all(
     MARKETS.map(async (mkt, idx) => {
-      // Small stagger so all 6 don't fire at exactly t=0
       if (idx > 0) await sleep(idx * 500);
       try {
         const entries = await fetchMarket(matchId, url, mkt.apiCode, mkt.isLineMarket, log);
@@ -317,38 +316,95 @@ export async function fetchMatchMarkets(
         const lineInfo = lines.length ? `, line ${lines.join("/")}` : "";
         log?.(`    [BE] ${mkt.label.toUpperCase()}: ${entries.length} entries (${uniqueBooks} bookmaker${uniqueBooks !== 1 ? "s" : ""}${lineInfo})`);
       } catch (e) {
-        log?.(`    [BE] ${mkt.label.toUpperCase()} failed: ${e}`);
+        log?.(`    [BE] ${mkt.label.toUpperCase()} error: ${e}`);
       }
     }),
   );
-
-  return result;
 }
 
 /**
- * Fetch key markets (1x2, ou, btts, dc) concurrently — no delays, no retries.
- * Used for live/on-demand predictions where speed matters more than completeness.
+ * Fetch all 6 per-bookmaker markets for a match concurrently.
+ * All markets are fired in parallel; each handles its own 429 retry/back-off.
+ * A small stagger (500 ms between launches) avoids a simultaneous burst hitting
+ * BetExplorer's rate-limit on the very first attempt.
+ *
+ * Soft-block detection: if the 1x2 market returns fewer than MIN_BOOKS_1X2
+ * bookmakers, the current Tor exit node is likely geo-blocked by BetExplorer.
+ * The circuit is rotated (NEWNYM) and all markets are re-fetched (up to 2 retries).
+ */
+export async function fetchMatchMarkets(
+  matchId: string,
+  matchUrl?: string,
+  log?: (msg: string) => void,
+): Promise<BEMatchMarkets> {
+  const url = matchUrl ?? "";
+  const MAX_CIRCUIT_RETRIES = 2;
+
+  for (let attempt = 0; attempt <= MAX_CIRCUIT_RETRIES; attempt++) {
+    const result: BEMatchMarkets = { "1x2": [], ou: [], ah: [], dnb: [], dc: [], btts: [] };
+    await fetchAllMarketsOnce(matchId, url, result, log);
+
+    const books1x2 = new Set(result["1x2"].map(e => e.bookmaker)).size;
+    if (books1x2 >= MIN_BOOKS_1X2 || attempt === MAX_CIRCUIT_RETRIES) {
+      if (attempt > 0) log?.(`    [BE] Circuit rotation succeeded — ${books1x2} bookmakers on attempt ${attempt + 1}`);
+      return result;
+    }
+
+    log?.(`    [BE] ⚠ Only ${books1x2} bookmakers (soft-blocked exit node) — rotating Tor circuit… (attempt ${attempt + 1}/${MAX_CIRCUIT_RETRIES})`);
+    await rotateCircuit(`fetchMatchMarkets attempt ${attempt + 1}`);
+  }
+
+  // Unreachable but satisfies TypeScript
+  return { "1x2": [], ou: [], ah: [], dnb: [], dc: [], btts: [] };
+}
+
+/**
+ * Fetch key markets (1x2, ou, btts, dc) concurrently — used for live/on-demand
+ * predictions where speed matters more than completeness.
+ *
+ * Soft-block detection: same as fetchMatchMarkets — if 1x2 returns fewer than
+ * MIN_BOOKS_1X2 bookmakers, rotate the circuit and retry (up to 2 times).
  */
 export async function fetchKeyMarketsLive(
   matchId: string,
   matchUrl: string,
+  log?: (msg: string) => void,
 ): Promise<Partial<BEMatchMarkets>> {
-  const result: Partial<BEMatchMarkets> = {};
-  await Promise.all([
-    fetchMarketOnce(matchId, matchUrl, "1x2", false)
-      .then(({ entries }) => { if (entries.length) result["1x2"] = entries; })
-      .catch(() => {}),
-    fetchMarketOnce(matchId, matchUrl, "ou", true)
-      .then(({ entries }) => { if (entries.length) result.ou = entries; })
-      .catch(() => {}),
-    fetchMarketOnce(matchId, matchUrl, "bts", false)
-      .then(({ entries }) => { if (entries.length) result.btts = entries; })
-      .catch(() => {}),
-    fetchMarketOnce(matchId, matchUrl, "dc", false)
-      .then(({ entries }) => { if (entries.length) result.dc = entries; })
-      .catch(() => {}),
-  ]);
-  return result;
+  const MAX_CIRCUIT_RETRIES = 2;
+
+  async function fetchOnce(): Promise<Partial<BEMatchMarkets>> {
+    const result: Partial<BEMatchMarkets> = {};
+    await Promise.all([
+      fetchMarketOnce(matchId, matchUrl, "1x2", false)
+        .then(({ entries }) => { if (entries.length) result["1x2"] = entries; })
+        .catch(() => {}),
+      fetchMarketOnce(matchId, matchUrl, "ou", true)
+        .then(({ entries }) => { if (entries.length) result.ou = entries; })
+        .catch(() => {}),
+      fetchMarketOnce(matchId, matchUrl, "bts", false)
+        .then(({ entries }) => { if (entries.length) result.btts = entries; })
+        .catch(() => {}),
+      fetchMarketOnce(matchId, matchUrl, "dc", false)
+        .then(({ entries }) => { if (entries.length) result.dc = entries; })
+        .catch(() => {}),
+    ]);
+    return result;
+  }
+
+  for (let attempt = 0; attempt <= MAX_CIRCUIT_RETRIES; attempt++) {
+    const result = await fetchOnce();
+    const books1x2 = new Set((result["1x2"] ?? []).map(e => e.bookmaker)).size;
+
+    if (books1x2 >= MIN_BOOKS_1X2 || attempt === MAX_CIRCUIT_RETRIES) {
+      if (attempt > 0) log?.(`    [BE] Circuit rotation succeeded — ${books1x2} bookmakers on attempt ${attempt + 1}`);
+      return result;
+    }
+
+    log?.(`    [BE] ⚠ Only ${books1x2} bookmakers (soft-blocked exit node) — rotating Tor circuit… (attempt ${attempt + 1}/${MAX_CIRCUIT_RETRIES})`);
+    await rotateCircuit(`fetchKeyMarketsLive attempt ${attempt + 1}`);
+  }
+
+  return {};
 }
 
 // ── Results page fetch ─────────────────────────────────────────────────────────

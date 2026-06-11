@@ -261,4 +261,26 @@ export async function torFetch(
   });
 }
 
+/**
+ * Rotate the Tor circuit mid-session.
+ *
+ * Call this when a soft-blocked exit node is detected (e.g. BetExplorer returns
+ * only 2-3 bookmakers instead of 10-17). Sends NEWNYM and waits for the new
+ * circuit to settle before returning. No-ops if Tor is disabled/not ready.
+ */
+export async function rotateCircuit(
+  label = "rotateCircuit",
+  waitMs = 8_000,
+): Promise<void> {
+  if (TOR_DISABLED || !torReady || !torAgent) return;
+  logger.info(`[TorProxy] ${label} — sending NEWNYM to rotate exit node…`);
+  await sendNewnym();
+  await new Promise(r => setTimeout(r, waitMs));
+  // Verify the new exit node (best-effort — non-fatal if it fails)
+  try {
+    const country = await getExitCountry(torAgent);
+    logger.info(`[TorProxy] ${label} — new exit country: ${country ?? "unknown"}`);
+  } catch { /* ignore */ }
+}
+
 export { torReady, torFailed, TOR_DISABLED };
