@@ -290,29 +290,36 @@ async function fetchMarket(
 }
 
 /**
- * Fetch all 6 per-bookmaker markets for a match.
- * Uses a 5 s base delay between markets to stay within BetExplorer's rate limit.
+ * Fetch all 6 per-bookmaker markets for a match concurrently.
+ * All markets are fired in parallel; each handles its own 429 retry/back-off.
+ * A small stagger (500 ms between launches) avoids a simultaneous burst hitting
+ * BetExplorer's rate-limit on the very first attempt.
  */
 export async function fetchMatchMarkets(
   matchId: string,
-  matchUrl: string,
+  matchUrl?: string,
   log?: (msg: string) => void,
 ): Promise<BEMatchMarkets> {
   const result: BEMatchMarkets = { "1x2": [], ou: [], ah: [], dnb: [], dc: [], btts: [] };
+  const url = matchUrl ?? "";
 
-  for (const mkt of MARKETS) {
-    try {
-      const entries = await fetchMarket(matchId, matchUrl, mkt.apiCode, mkt.isLineMarket, log);
-      result[mkt.label] = entries;
-      const uniqueBooks = new Set(entries.map(e => e.bookmaker)).size;
-      const lines = [...new Set(entries.map(e => e.line).filter(Boolean))].sort((a, b) => (a as number) - (b as number));
-      const lineInfo = lines.length ? `, line ${lines.join("/")}` : "";
-      log?.(`    [BE] ${mkt.label.toUpperCase()}: ${entries.length} entries (${uniqueBooks} bookmaker${uniqueBooks !== 1 ? "s" : ""}${lineInfo})`);
-    } catch (e) {
-      log?.(`    [BE] ${mkt.label.toUpperCase()} failed: ${e}`);
-    }
-    await sleep(5000);
-  }
+  await Promise.all(
+    MARKETS.map(async (mkt, idx) => {
+      // Small stagger so all 6 don't fire at exactly t=0
+      if (idx > 0) await sleep(idx * 500);
+      try {
+        const entries = await fetchMarket(matchId, url, mkt.apiCode, mkt.isLineMarket, log);
+        result[mkt.label] = entries;
+        const uniqueBooks = new Set(entries.map(e => e.bookmaker)).size;
+        const lines = [...new Set(entries.map(e => e.line).filter(Boolean))].sort((a, b) => (a as number) - (b as number));
+        const lineInfo = lines.length ? `, line ${lines.join("/")}` : "";
+        log?.(`    [BE] ${mkt.label.toUpperCase()}: ${entries.length} entries (${uniqueBooks} bookmaker${uniqueBooks !== 1 ? "s" : ""}${lineInfo})`);
+      } catch (e) {
+        log?.(`    [BE] ${mkt.label.toUpperCase()} failed: ${e}`);
+      }
+    }),
+  );
+
   return result;
 }
 

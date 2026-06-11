@@ -112,7 +112,7 @@ router.get("/fixture/be/:matchId", async (req, res) => {
   } = req.query as Record<string, string>;
 
   try {
-    const marketsPromise = fetchMatchMarkets(matchId, undefined, undefined);
+    const marketsPromise = fetchMatchMarkets(matchId, matchUrl || undefined);
 
     let matchPageData: Awaited<ReturnType<typeof fetchMatchPageData>> = null;
     let homeStats: Awaited<ReturnType<typeof fetchBETeamStats>> = null;

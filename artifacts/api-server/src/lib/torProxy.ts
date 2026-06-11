@@ -28,7 +28,7 @@ const TOR_DISABLED      = process.env["TOR_PROXY"] === "0";
 const SOCKS_PORT        = 9050;
 const CONTROL_PORT      = 9051;
 const DATA_DIR          = "/tmp/tor-be-proxy";
-const BOOTSTRAP_TIMEOUT = 60_000;    // 60s — no StrictNodes = fast bootstrap
+const BOOTSTRAP_TIMEOUT = 120_000;   // 120s — allow more time on slower networks
 const MAX_RETRIES       = 12;        // rotate circuit up to 12 times
 const NEWNYM_DELAY      = 4_000;     // ms to wait after NEWNYM before re-checking
 // Country codes considered "EU / non-US" for BetExplorer bookmaker geo
@@ -54,9 +54,9 @@ function spawnTor(): Promise<void> {
       "--SocksPort",    String(SOCKS_PORT),
       "--ControlPort",  String(CONTROL_PORT),
       "--CookieAuthentication", "0",   // no auth — loopback only
-      "--ExcludeExitNodes", "{US}",    // never exit through US IPs
-      "--StrictNodes",  "1",           // enforce the exclusion strictly
       "--Log", "notice stderr",
+      // Note: ExcludeExitNodes/StrictNodes omitted — GEOIP files unavailable in nix store.
+      // Country filtering is handled post-bootstrap via ip-api.com + NEWNYM rotation.
     ], { stdio: ["ignore", "ignore", "pipe"] });
 
     const timer = setTimeout(() => {
@@ -104,17 +104,27 @@ function sendNewnym(): Promise<void> {
 
 function getExitCountry(agent: SocksProxyAgent): Promise<string | null> {
   return new Promise((resolve) => {
-    const req = https.request({
+    // Use ip-api.com (free, no account required, returns JSON with countryCode)
+    const req = http.request({
       agent,
-      hostname: "ipapi.co",
-      path:     "/country/",
-      headers:  { Host: "ipapi.co", "User-Agent": "curl/7.88" },
+      method:   "GET",
+      hostname: "ip-api.com",
+      port:     80,
+      path:     "/json/?fields=countryCode",
+      headers:  { Host: "ip-api.com", "User-Agent": "curl/7.88" },
       timeout:  10_000,
     }, (res) => {
       let body = "";
       res.setEncoding("utf8");
       res.on("data", (c: string) => body += c);
-      res.on("end",  () => resolve(body.trim().toUpperCase()));
+      res.on("end",  () => {
+        try {
+          const json = JSON.parse(body) as { countryCode?: string };
+          resolve(json.countryCode?.trim().toUpperCase() ?? null);
+        } catch {
+          resolve(null);
+        }
+      });
       res.on("error",() => resolve(null));
     });
     req.on("error",   () => resolve(null));
@@ -139,7 +149,7 @@ function startBootstrap(): Promise<void> {
       return;
     }
 
-    logger.info("[TorProxy] Starting Tor (ExcludeExitNodes={US}, StrictNodes=1)…");
+    logger.info("[TorProxy] Starting Tor…");
     try {
       await spawnTor();
     } catch (err) {
