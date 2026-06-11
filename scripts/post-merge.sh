@@ -38,3 +38,27 @@ fi
 
 # Push any pending database schema migrations
 pnpm --filter db push
+
+# ── Restore missing .bin symlinks in workspace packages ──────────────────────
+#
+# pnpm's virtual store layout sometimes omits .bin entries for devDependencies
+# in workspace packages. Recreate critical ones so workflow scripts can resolve
+# their binaries without a full re-install.
+#
+PROC_ENG_BIN="artifacts/processing-engine/node_modules/.bin"
+mkdir -p "$PROC_ENG_BIN"
+for pair in \
+  "vite:../vite/bin/vite.js" \
+  "tsc:../typescript/bin/tsc" \
+  "tsx:../tsx/dist/cli.mjs"
+do
+  name="${pair%%:*}"
+  target="${pair##*:}"
+  dest="$PROC_ENG_BIN/$name"
+  src="$PROC_ENG_BIN/$target"
+  # Only create the symlink if the target file actually exists
+  if [ -f "$(dirname "$dest")/$target" ] && [ ! -e "$dest" ]; then
+    ln -sf "$target" "$dest"
+    echo "[post-merge] Linked $name → $target"
+  fi
+done
