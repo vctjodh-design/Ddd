@@ -148,7 +148,8 @@ function beMatchToFixture(m: BEMatch, date: string): Fixture {
     hasHighlights: false,
     dataSource: "betexplorer",
     beMatchId: m.matchId,
-  };
+    beMatchUrl: m.matchUrl,
+  } as Fixture & { beMatchUrl: string };
 }
 
 /** Simple team-name normalisation for BE↔SH deduplication */

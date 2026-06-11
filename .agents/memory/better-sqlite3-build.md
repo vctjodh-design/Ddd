@@ -13,21 +13,21 @@ The binary must be compiled targeting the exact same Node.js that the API server
 
 **Full fix sequence (confirmed working):**
 ```bash
-# 1. Install node-gyp globally (not on PATH by default)
-npm install -g node-gyp
+# 1. Clear any partial/wrong build
+SQLITE_DIR=$(ls -d node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 | head -1)
+rm -rf "$SQLITE_DIR/build"
 
-# 2. Clear any partial/wrong build
-rm -rf node_modules/.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3/build
-
-# 3. Rebuild using -O0 (prevents OOM kill) AND --nodedir pointing at the exact
+# 2. Rebuild using -O0 (prevents OOM kill) AND --nodedir pointing at the exact
 #    Node.js 20 nix path that the API server workflow actually runs with.
-#    Find the correct path: ps aux | grep "dist/index" — note the nodejs-XX.XX path
-cd node_modules/.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3
-CFLAGS="-O0" CXXFLAGS="-O0" node-gyp rebuild \
+#    node-gyp is NOT in PATH — use `npx node-gyp` (available via npm, no install needed)
+cd "$SQLITE_DIR"
+CFLAGS="-O0" CXXFLAGS="-O0" npx node-gyp rebuild \
   --nodedir=/nix/store/0akvkk9k1a7z5vjp34yz6dr91j776jhv-nodejs-20.11.1
 
-# 4. Restart the api-server workflow
+# 3. Restart the api-server workflow
 ```
+
+**node-gyp NOT in PATH:** `npm install -g node-gyp` does not work in Replit sandbox. Use `npx node-gyp` instead — it downloads and runs node-gyp without a global install. Confirmed working with node-gyp v12.4.0.
 
 This produces `build/Release/better_sqlite3.node` compiled for the correct ABI.
 

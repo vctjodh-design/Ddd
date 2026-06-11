@@ -1353,8 +1353,51 @@ export default function FixtureDetail() {
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState<"home" | "away" | "compare" | "analysis" | "odds" | "predictions">("home");
 
-  const fixtureId = Number(id);
-  const { data, isLoading, isError } = useGetFixtureDetail(fixtureId);
+  const isBE = id?.startsWith("be-") ?? false;
+  const beMatchId = isBE ? id!.slice(3) : null;
+  const fixtureId = isBE ? 0 : Number(id);
+
+  // BE fixture custom state
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [beData, setBeData] = React.useState<any>(null);
+  const [beLoading, setBeLoading] = React.useState(isBE);
+  const [beError, setBeError] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!isBE || !beMatchId) return;
+    setBeLoading(true);
+    setBeError(false);
+
+    const meta = (() => {
+      try {
+        const raw = sessionStorage.getItem("be-fixture-meta");
+        return raw ? JSON.parse(raw) : null;
+      } catch { return null; }
+    })();
+
+    const params = new URLSearchParams();
+    if (meta?.matchUrl) params.set("matchUrl", meta.matchUrl);
+    if (meta?.homeTeam) params.set("homeTeam", meta.homeTeam);
+    if (meta?.awayTeam) params.set("awayTeam", meta.awayTeam);
+    if (meta?.league) params.set("league", meta.league);
+    if (meta?.kickoff != null) params.set("kickoff", String(meta.kickoff));
+
+    fetch(`/api/fixture/be/${beMatchId}?${params.toString()}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then(setBeData)
+      .catch(() => setBeError(true))
+      .finally(() => setBeLoading(false));
+  }, [isBE, beMatchId]);
+
+  const { data: shData, isLoading: shLoading, isError: shError } = useGetFixtureDetail(
+    fixtureId,
+    { query: { enabled: !isBE && !!fixtureId } }
+  );
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data: any = isBE ? beData : shData;
+  const isLoading = isBE ? beLoading : shLoading;
+  const isError = isBE ? beError : shError;
 
   const fixture = data?.fixture as {
     id: number; status: string; slug: string;

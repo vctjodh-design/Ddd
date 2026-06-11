@@ -51,7 +51,7 @@ Football data processing app: scrapes, stores, and analyses pre-match team and p
 
 - **Port**: API server uses port 8080, NOT 5000. The replit.md was previously wrong.
 - **API server dev script skips build**: The `dev` script uses `exec env ... node dist/index.mjs` (no build step) so Replit's workflow health check can detect the port. After any source change, rebuild manually first: `pnpm --filter @workspace/api-server run build`. See `.agents/memory/api-server-workflow.md` for why.
-- **better-sqlite3 rebuild**: Must run `node-gyp rebuild --nodedir=<node20-nix-path>` with `CFLAGS="-O0" CXXFLAGS="-O0"` — see `.agents/memory/better-sqlite3-build.md` for exact commands.
+- **better-sqlite3 rebuild**: `node-gyp` is NOT in PATH — use `npx node-gyp rebuild --nodedir=<node20-nix-path>` with `CFLAGS="-O0" CXXFLAGS="-O0"` — see `.agents/memory/better-sqlite3-build.md` for exact commands.
 - **StatsHub 429s**: StatsHub rate-limits aggressively. Processing jobs have built-in retry/back-off but international fixtures (no league) often get 429s and return empty stats — this is expected.
 - **pnpm typecheck** has pre-existing errors in `home.tsx` and `fixture-detail.tsx` (api-client-react lib not pre-built). These do not affect the running app.
 

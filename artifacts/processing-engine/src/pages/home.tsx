@@ -533,14 +533,29 @@ export default function Home() {
   };
 
   // Navigate to fixture, persisting current date + scroll so we can come back
-  const handleFixtureClick = (fixtureId: number) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleFixtureClick = (fixture: any) => {
     try {
       sessionStorage.setItem(SESSION_KEY, JSON.stringify({
         date: formattedDate,
         scrollY: window.scrollY,
       }));
     } catch { /* ignore */ }
-    navigate(`/fixture/${fixtureId}`);
+
+    if (fixture.dataSource === "betexplorer" && fixture.beMatchId) {
+      try {
+        sessionStorage.setItem("be-fixture-meta", JSON.stringify({
+          matchUrl: fixture.beMatchUrl ?? null,
+          homeTeam: fixture.homeTeam?.name ?? "",
+          awayTeam: fixture.awayTeam?.name ?? "",
+          league: fixture.leagueName ?? "",
+          kickoff: fixture.kickoffTimestamp ?? 0,
+        }));
+      } catch { /* ignore */ }
+      navigate(`/fixture/be-${fixture.beMatchId}`);
+    } else {
+      navigate(`/fixture/${fixture.id}`);
+    }
   };
 
   // Filter leagues / fixtures by search query
@@ -824,7 +839,7 @@ export default function Home() {
                       return (
                         <div
                           key={fixture.id}
-                          onClick={() => handleFixtureClick(fixture.id)}
+                          onClick={() => handleFixtureClick(fixture)}
                           className={`p-4 flex items-center justify-between transition-colors hover:bg-white/[0.03] cursor-pointer ${
                             isFinished || isPostponed || isCancelled ? "opacity-60" : ""
                           } ${isLive ? "bg-primary/5" : ""}`}

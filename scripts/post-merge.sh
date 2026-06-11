@@ -25,7 +25,7 @@ if [ -n "$NODE20_DIR" ] && [ -d "$NODE20_DIR/include/node" ]; then
   if [ -n "$SQLITE_DIR" ] && [ -d "$SQLITE_DIR" ]; then
     echo "[post-merge] Rebuilding better-sqlite3 → Node.js 20 ($NODE20_DIR)..."
     rm -rf "$SQLITE_DIR/build"
-    (cd "$SQLITE_DIR" && CFLAGS="-O0" CXXFLAGS="-O0" node-gyp rebuild --nodedir="$NODE20_DIR")
+    (cd "$SQLITE_DIR" && CFLAGS="-O0" CXXFLAGS="-O0" npx node-gyp rebuild --nodedir="$NODE20_DIR")
     echo "[post-merge] better-sqlite3 native build complete."
   else
     echo "[post-merge] Warning: better-sqlite3 directory not found in .pnpm store"
