@@ -370,11 +370,35 @@ function parseResultsHtml(html: string, acceptDates: Set<string>, isResultsPage 
 
     // League/country rows
     if (attrs.includes("js-tournament")) {
-      const leagueM = content.match(/<a[^>]+>([^<]+)<\/a>/);
+      // Anchor may contain inner tags: <i><img alt="Country"></i>Country: League
+      // Use [\s\S]*? to capture full inner HTML, then strip tags + decode entities.
+      const leagueM = content.match(/<a[^>]+>([\s\S]*?)<\/a>/);
       if (leagueM) {
-        const parts = leagueM[1].trim().split(/\s*\/\s*/);
-        currentCountry = parts[0]?.trim() ?? "";
-        currentLeague  = parts[1]?.trim() ?? leagueM[1].trim();
+        const text = leagueM[1]
+          .replace(/<[^>]+>/g, "")   // strip inner tags (img, i, span, etc.)
+          .replace(/&nbsp;/g, " ")
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&#\d+;/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (text) {
+          // BetExplorer uses "Country: League" (colon) on schedule page
+          // and "Country / League" (slash) on results page — handle both.
+          const colonIdx = text.indexOf(": ");
+          const slashIdx = text.indexOf(" / ");
+          if (colonIdx > 0) {
+            currentCountry = text.slice(0, colonIdx).trim();
+            currentLeague  = text.slice(colonIdx + 2).trim();
+          } else if (slashIdx > 0) {
+            currentCountry = text.slice(0, slashIdx).trim();
+            currentLeague  = text.slice(slashIdx + 3).trim();
+          } else {
+            currentCountry = "";
+            currentLeague  = text;
+          }
+        }
       }
       continue;
     }
