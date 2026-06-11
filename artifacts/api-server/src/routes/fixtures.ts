@@ -73,11 +73,11 @@ function parseFixture(raw: RawEvent): Fixture {
     awayTeam: parseTeam(raw.awayTeam),
     homeScore:
       ev.status !== "notstarted"
-        ? ((ev.homeScoreCurrent as number | null) ?? null)
+        ? ((ev.homeScoreCurrent as number | null) ?? (ev.homeScoreNormaltime as number | null) ?? null)
         : null,
     awayScore:
       ev.status !== "notstarted"
-        ? ((ev.awayScoreCurrent as number | null) ?? null)
+        ? ((ev.awayScoreCurrent as number | null) ?? (ev.awayScoreNormaltime as number | null) ?? null)
         : null,
     kickoffTimestamp: (ev.timeStartTimestamp as number) || 0,
     roundInfo: (ev.roundInfo as number | null) ?? null,
@@ -132,8 +132,8 @@ function beMatchToFixture(m: BEMatch, date: string): Fixture {
     status: m.isFinished ? "finished" : "notstarted",
     homeTeam: syntheticTeam(m.homeTeam),
     awayTeam: syntheticTeam(m.awayTeam),
-    homeScore: null,
-    awayScore: null,
+    homeScore: m.homeScore ?? null,
+    awayScore: m.awayScore ?? null,
     kickoffTimestamp,
     roundInfo: null,
     leagueId,

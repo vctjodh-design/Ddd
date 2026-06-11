@@ -55,7 +55,9 @@ export interface BEMatch {
   bestHomeOdds: number | null;
   bestDrawOdds: number | null;
   bestAwayOdds: number | null;
-  isFinished:   boolean;     // true = from results page (completed match)
+  isFinished:   boolean;     // true = score found on results page (completed match)
+  homeScore:    number | null; // final score parsed from results page; null for upcoming
+  awayScore:    number | null;
 }
 
 /** BEMatch enriched with per-bookmaker odds */
@@ -461,6 +463,32 @@ function parseResultsHtml(html: string, acceptDates: Set<string>, isResultsPage 
     const bestDrawOdds = parseOdd(oddMatches[1] ?? "");
     const bestAwayOdds = parseOdd(oddMatches[2] ?? "");
 
+    // Try to extract the final score from results-page rows.
+    // Strip anchor text (team names) then explicitly remove the known kickoff
+    // time string (e.g. "18:00") so the regex can't mistake it for a score.
+    // After removal, the first remaining "X:Y" pattern is the match score.
+    // BetExplorer shows scores as "1:0" (or "1:0&nbsp;") in result cells.
+    let homeScore: number | null = null;
+    let awayScore: number | null = null;
+    if (isResultsPage) {
+      const noAnchor = content.replace(/<a [^>]*>[\s\S]*?<\/a>/g, " ");
+      // Remove the kickoff time we already parsed (e.g. "18:00", "23:30")
+      // so it isn't confused with a football score.
+      const kickoffTimePattern = new RegExp(`\\b${hour}:${min}\\b`, "g");
+      const noTime = noAnchor.replace(kickoffTimePattern, " ");
+      // Scores are small numbers; ignore anything ≥ 20 per side (no football team
+      // scores 20+ in a match) to filter any remaining false positives.
+      const scoreM = noTime.match(/\b(\d{1,2}):(\d{1,2})\b/);
+      if (scoreM) {
+        const h = parseInt(scoreM[1], 10);
+        const a = parseInt(scoreM[2], 10);
+        if (h < 20 && a < 20) {
+          homeScore = h;
+          awayScore = a;
+        }
+      }
+    }
+
     results.push({
       homeTeam, awayTeam,
       kickoffTime: `${hour}:${min}`,
@@ -468,7 +496,8 @@ function parseResultsHtml(html: string, acceptDates: Set<string>, isResultsPage 
       league:   currentLeague  || undefined,
       country:  currentCountry || undefined,
       bestHomeOdds, bestDrawOdds, bestAwayOdds,
-      isFinished: isResultsPage,
+      isFinished: isResultsPage && homeScore !== null,
+      homeScore, awayScore,
     });
   }
   return results;

@@ -107,6 +107,50 @@ router.post("/model/predict-live", async (req, res) => {
   }
 });
 
+/**
+ * Live BE prediction: accepts pre-fetched BETeamStats + scrapes market odds on-demand.
+ * Used for BetExplorer-only fixtures that have no StatsHub team IDs.
+ */
+router.post("/model/predict-be", async (req, res) => {
+  const { homeTeam, awayTeam, matchId, matchUrl, kickoffTs, homeBeStats, awayBeStats } = req.body as {
+    homeTeam?: string; awayTeam?: string;
+    matchId?: string; matchUrl?: string; kickoffTs?: number;
+    homeBeStats?: object; awayBeStats?: object;
+  };
+  if (!homeTeam || !awayTeam || !matchId || !matchUrl || !kickoffTs) {
+    return void res.status(400).json({ error: "homeTeam, awayTeam, matchId, matchUrl, kickoffTs required" });
+  }
+  try {
+    const beLog = (msg: string) => console.log(msg);
+    beLog(`[predict-be] ${homeTeam} vs ${awayTeam} matchId=${matchId}`);
+
+    const matchLike: Record<string, string | null> = {
+      be_home_stats_json: homeBeStats ? JSON.stringify(homeBeStats) : null,
+      be_away_stats_json: awayBeStats ? JSON.stringify(awayBeStats) : null,
+      home_team_stats_json: null,
+      away_team_stats_json: null,
+      home_player_stats_json: null,
+      away_player_stats_json: null,
+      po_1x2_json: null, po_btts_json: null, po_ou_json: null, po_dc_json: null,
+    };
+
+    try {
+      const markets = await fetchKeyMarketsLive(matchId, matchUrl);
+      if (markets["1x2"]?.length) matchLike.po_1x2_json = JSON.stringify(markets["1x2"]);
+      if (markets.btts?.length)   matchLike.po_btts_json = JSON.stringify(markets.btts);
+      if (markets.ou?.length)     matchLike.po_ou_json   = JSON.stringify(markets.ou);
+      if (markets.dc?.length)     matchLike.po_dc_json   = JSON.stringify(markets.dc);
+    } catch (e) {
+      beLog(`[predict-be] odds fetch error (using no odds): ${e}`);
+    }
+
+    const prediction = predictMatch(matchLike as Parameters<typeof predictMatch>[0]);
+    res.json({ ...prediction, source: "be-live" });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 router.post("/model/predict-by-teams", (req, res) => {
   const { homeTeam, awayTeam, kickoffTs } = req.body as {
     homeTeam?: string; awayTeam?: string; kickoffTs?: number;

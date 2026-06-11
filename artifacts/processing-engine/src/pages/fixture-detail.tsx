@@ -1160,9 +1160,12 @@ function BEStatsBar({ homeStats, awayStats, homeColor, awayColor }: {
   );
 }
 
-function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, kickoffTs }: {
+function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, kickoffTs, beMatchId, beMatchUrl, beHomeStats, beAwayStats }: {
   homeTeamId: number; awayTeamId: number;
   homeTeam: string; awayTeam: string; kickoffTs: number;
+  beMatchId?: string | null; beMatchUrl?: string | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  beHomeStats?: any; beAwayStats?: any;
 }) {
   const isBEFixture = homeTeamId === 0 || awayTeamId === 0;
 
@@ -1182,7 +1185,25 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
   const runPrediction = async () => {
     setLoading(true); setErr(null); setPred(null);
     try {
-      if (isBEFixture) {
+      if (isBEFixture && beMatchId && beMatchUrl) {
+        setLoadingMsg("Fetching live BE odds…");
+        const msgTimer = setTimeout(() => setLoadingMsg("Scraping bookmaker odds…"), 5000);
+        try {
+          const r = await fetch("/api/model/predict-be", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              homeTeam, awayTeam,
+              matchId: beMatchId, matchUrl: beMatchUrl,
+              kickoffTs,
+              homeBeStats: beHomeStats ?? null,
+              awayBeStats: beAwayStats ?? null,
+            }),
+          });
+          if (!r.ok) { setErr("error"); return; }
+          setPred(await r.json());
+        } finally { clearTimeout(msgTimer); }
+      } else if (isBEFixture) {
         setLoadingMsg("Looking up stored match data…");
         const r = await fetch("/api/model/predict-by-teams", {
           method: "POST",
@@ -1246,7 +1267,7 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
 
       {isBEFixture && !pred && !loading && !err && trained !== false && (
         <div className="text-[11px] font-mono text-sky-400/60 border border-sky-500/20 bg-sky-500/5 p-3">
-          ℹ BetExplorer fixture — prediction uses historical stored data (no live StatsHub scrape).
+          ℹ BetExplorer fixture — prediction uses live BE odds + team history (Poisson model).
         </div>
       )}
 
@@ -1611,6 +1632,12 @@ export default function FixtureDetail() {
                   homeTeam={(fixture.homeTeam as { name: string }).name}
                   awayTeam={(fixture.awayTeam as { name: string }).name}
                   kickoffTs={fixture.kickoffTimestamp as number}
+                  beMatchId={isBE ? beMatchId : null}
+                  beMatchUrl={isBE ? (() => {
+                    try { return (JSON.parse(sessionStorage.getItem("be-fixture-meta") ?? "{}") as { matchUrl?: string }).matchUrl ?? null; } catch { return null; }
+                  })() : null}
+                  beHomeStats={isBE ? (data as { home?: { beStats?: unknown } })?.home?.beStats : undefined}
+                  beAwayStats={isBE ? (data as { away?: { beStats?: unknown } })?.away?.beStats : undefined}
                 />
               </motion.div>
             ) : (
