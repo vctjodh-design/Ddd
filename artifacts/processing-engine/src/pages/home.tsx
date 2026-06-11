@@ -852,7 +852,9 @@ export default function Home() {
                             ) : isFinished ? (
                               <>
                                 <div className="text-xl md:text-2xl font-bold text-foreground">
-                                  {fixture.homeScore ?? 0} - {fixture.awayScore ?? 0}
+                                  {fixture.homeScore !== null && fixture.awayScore !== null
+                                    ? `${fixture.homeScore} - ${fixture.awayScore}`
+                                    : "— - —"}
                                 </div>
                                 <div className="text-[10px] text-muted-foreground mt-1 uppercase tracking-widest">FT</div>
                               </>

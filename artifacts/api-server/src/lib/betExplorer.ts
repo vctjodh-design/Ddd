@@ -55,11 +55,42 @@ export interface BEMatch {
   bestHomeOdds: number | null;
   bestDrawOdds: number | null;
   bestAwayOdds: number | null;
+  isFinished:   boolean;     // true = from results page (completed match)
 }
 
 /** BEMatch enriched with per-bookmaker odds */
 export interface BEMatchFull extends BEMatch {
   markets: BEMatchMarkets;
+}
+
+/** A single result from a team's results page */
+export interface BETeamResult {
+  result: "W" | "D" | "L";
+  isHome: boolean;
+  goalsScored: number;
+  goalsConceded: number;
+  opponent: string;
+}
+
+/** Aggregated stats computed from a team's last N results */
+export interface BETeamStats {
+  avgGoalsScored: number;
+  avgGoalsConceded: number;
+  avgGoalsScoredL5: number;
+  avgGoalsConcededL5: number;
+  avgGoalsScoredHome: number;
+  avgGoalsConcededHome: number;
+  avgGoalsScoredAway: number;
+  avgGoalsConcededAway: number;
+  cleanSheets: number;
+  cleanSheetsPct: number;
+  bttsPct: number;
+  form: Array<"W" | "D" | "L">;
+  wins: number;
+  draws: number;
+  losses: number;
+  totalGames: number;
+  results: BETeamResult[];
 }
 
 // ── Normalisation / matching ───────────────────────────────────────────────────
@@ -320,8 +351,11 @@ export async function fetchKeyMarketsLive(
  * A match at 22:00–23:59 UTC appears on the **next** calendar day in BetExplorer
  * (e.g. 23:00 UTC June 10 → 01:00 CET June 11). To avoid missing these, callers
  * pass both the primary UTC date and the following day.
+ *
+ * isResultsPage — when true, marks all parsed matches as finished (from the
+ * completed-matches results page). Schedule page matches are marked as not finished.
  */
-function parseResultsHtml(html: string, acceptDates: Set<string>): BEMatch[] {
+function parseResultsHtml(html: string, acceptDates: Set<string>, isResultsPage = false): BEMatch[] {
   const results: BEMatch[] = [];
 
   let currentLeague = "";
@@ -403,13 +437,20 @@ function parseResultsHtml(html: string, acceptDates: Set<string>): BEMatch[] {
       league:   currentLeague  || undefined,
       country:  currentCountry || undefined,
       bestHomeOdds, bestDrawOdds, bestAwayOdds,
+      isFinished: isResultsPage,
     });
   }
   return results;
 }
 
 /** Fetch one BetExplorer page and parse it, returning [] on any error. */
-async function fetchAndParse(url: string, acceptDates: Set<string>, label: string, log?: (msg: string) => void): Promise<BEMatch[]> {
+async function fetchAndParse(
+  url: string,
+  acceptDates: Set<string>,
+  label: string,
+  log?: (msg: string) => void,
+  isResultsPage = false,
+): Promise<BEMatch[]> {
   log?.(`[BetExplorer] Fetching ${label}: ${url}`);
   try {
     const resp = await torFetch(url, {
@@ -426,7 +467,7 @@ async function fetchAndParse(url: string, acceptDates: Set<string>, label: strin
       log?.(`[BetExplorer] ${label} HTTP ${resp.status} — skipping`);
       return [];
     }
-    return parseResultsHtml(await resp.text(), acceptDates);
+    return parseResultsHtml(await resp.text(), acceptDates, isResultsPage);
   } catch (e) {
     log?.(`[BetExplorer] ${label} fetch error: ${e} — skipping`);
     return [];
@@ -484,11 +525,11 @@ export async function fetchBetExplorerMatches(
 
   // Fetch both concurrently — schedule covers upcoming, results covers completed
   const [resultMatches, scheduleMatches] = await Promise.all([
-    fetchAndParse(resultsUrl,  acceptDates, "results page",  log),
-    fetchAndParse(scheduleUrl, acceptDates, "schedule page", log),
+    fetchAndParse(resultsUrl,  acceptDates, "results page",  log, true),
+    fetchAndParse(scheduleUrl, acceptDates, "schedule page", log, false),
   ]);
 
-  // Merge, deduplicating by matchId (results page takes precedence — has odds)
+  // Merge, deduplicating by matchId (results page takes precedence — has odds + isFinished)
   const seen = new Set<string>();
   const merged: BEMatch[] = [];
   for (const m of [...resultMatches, ...scheduleMatches]) {
@@ -499,11 +540,221 @@ export async function fetchBetExplorerMatches(
   }
 
   const withOdds = merged.filter(m => m.bestHomeOdds !== null).length;
-  log?.(`[BetExplorer] ${merged.length} match(es) for ${date} (${resultMatches.length} results + ${scheduleMatches.length} scheduled), ${withOdds} with best odds`);
+  const finished = merged.filter(m => m.isFinished).length;
+  log?.(`[BetExplorer] ${merged.length} match(es) for ${date} (${resultMatches.length} finished + ${scheduleMatches.length} scheduled), ${withOdds} with best odds`);
 
   // Cache the result (only if non-empty — don't cache empty 429 responses)
   if (merged.length > 0) {
     listingCache.set(date, { matches: merged, expiresAt: Date.now() + CACHE_TTL_MS });
   }
   return merged;
+}
+
+// ── Match page: extract team links + score ─────────────────────────────────────
+
+/**
+ * Fetch the BetExplorer match detail page and extract:
+ * - Home and away team page slugs/IDs (for fetching team results)
+ * - Final score (best-effort from multiple HTML patterns)
+ *
+ * Returns null if the page can't be fetched or team links can't be found.
+ */
+export async function fetchMatchPageData(
+  matchUrl: string,
+  log?: (msg: string) => void,
+): Promise<{
+  homeSlug: string; homeId: string;
+  awaySlug: string; awayId: string;
+  homeScore: number | null; awayScore: number | null;
+} | null> {
+  log?.(`[BetExplorer] Fetching match page: ${matchUrl}`);
+  try {
+    const resp = await torFetch(matchUrl, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-GB,en;q=0.9",
+        "Referer": `${BASE}/football/`,
+      },
+      redirect: "follow",
+      timeout: 20_000,
+    });
+    if (!resp.ok) { log?.(`[BetExplorer] Match page HTTP ${resp.status}`); return null; }
+    const html = await resp.text();
+
+    // Extract first two unique /football/team/{slug}/{id}/ links
+    const seen = new Set<string>();
+    const teamLinks: Array<{ slug: string; id: string }> = [];
+    for (const m of html.matchAll(/href="(\/football\/team\/([^\/]+)\/([a-zA-Z0-9]+)\/?)"/g)) {
+      const id = m[3];
+      if (!seen.has(id)) {
+        seen.add(id);
+        teamLinks.push({ slug: m[2], id });
+      }
+      if (teamLinks.length === 2) break;
+    }
+    if (teamLinks.length < 2) {
+      log?.(`[BetExplorer] Match page: only ${teamLinks.length} team link(s) found`);
+      return null;
+    }
+
+    // Try to extract final score (multiple patterns for robustness)
+    let homeScore: number | null = null;
+    let awayScore: number | null = null;
+    const scorePatterns = [
+      /class="[^"]*(?:matchresult|event-score|score-result|result)[^"]*"[^>]*>\s*(\d+)\s*:\s*(\d+)/i,
+      /<title>[^<]*?(\d+)\s*:\s*(\d+)[^<]*<\/title>/i,
+      /data-home-score="(\d+)"[^>]*data-away-score="(\d+)"/i,
+      /<span[^>]*class="[^"]*score[^"]*"[^>]*>(\d+)\s*:\s*(\d+)/i,
+    ];
+    for (const pat of scorePatterns) {
+      const sm = html.match(pat);
+      if (sm) {
+        homeScore = parseInt(sm[1]);
+        awayScore = parseInt(sm[2]);
+        break;
+      }
+    }
+
+    return {
+      homeSlug: teamLinks[0].slug, homeId: teamLinks[0].id,
+      awaySlug: teamLinks[1].slug, awayId: teamLinks[1].id,
+      homeScore, awayScore,
+    };
+  } catch (e) {
+    log?.(`[BetExplorer] Match page fetch error: ${e}`);
+    return null;
+  }
+}
+
+// ── Team results page: scraping + stat computation ────────────────────────────
+
+/**
+ * Parse a BetExplorer team results page HTML, extracting the last N results.
+ *
+ * Row format (team results page):
+ *   <tr> contains:
+ *     - icon icon__w / icon__d / icon__l  → match result
+ *     - <strong>TeamName</strong>          → focal team (this team)
+ *     - <a href="/football/team/...">      → opponent
+ *     - "X:Y&nbsp;"                       → score where X=home goals, Y=away goals
+ *
+ * isHome detection: <strong> (focal team) appears BEFORE the opponent /football/team/ link
+ * when the focal team played at home; after when away.
+ */
+function parseTeamResultsHtml(html: string): BETeamResult[] {
+  const results: BETeamResult[] = [];
+  const trPat = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+  let tr: RegExpExecArray | null;
+
+  while ((tr = trPat.exec(html)) !== null) {
+    const content = tr[1];
+
+    // Must have a result icon
+    const resultM = content.match(/icon icon__(w|d|l)/);
+    if (!resultM) continue;
+    const result = resultM[1].toUpperCase() as "W" | "D" | "L";
+
+    // Score format: "X:Y&nbsp;" where X=home, Y=away
+    const scoreM = content.match(/(\d+):(\d+)&nbsp;/);
+    if (!scoreM) continue;
+    const homeGoals = parseInt(scoreM[1]);
+    const awayGoals = parseInt(scoreM[2]);
+
+    // isHome: <strong> (focal team) appears before opponent link
+    const strongIdx = content.indexOf("<strong>");
+    const teamLinkIdx = content.indexOf("/football/team/");
+    const isHome = strongIdx >= 0 && teamLinkIdx >= 0 && strongIdx < teamLinkIdx;
+
+    // Extract opponent name
+    const opponentM = content.match(/<a href="\/football\/team\/[^"]+">([^<]+)<\/a>/);
+    const opponent = opponentM ? opponentM[1].trim() : "";
+
+    results.push({
+      result,
+      isHome,
+      goalsScored:   isHome ? homeGoals : awayGoals,
+      goalsConceded: isHome ? awayGoals : homeGoals,
+      opponent,
+    });
+  }
+
+  return results;
+}
+
+function computeBETeamStats(results: BETeamResult[]): BETeamStats {
+  const n = results.length;
+  if (!n) {
+    return {
+      avgGoalsScored: 0, avgGoalsConceded: 0,
+      avgGoalsScoredL5: 0, avgGoalsConcededL5: 0,
+      avgGoalsScoredHome: 0, avgGoalsConcededHome: 0,
+      avgGoalsScoredAway: 0, avgGoalsConcededAway: 0,
+      cleanSheets: 0, cleanSheetsPct: 0, bttsPct: 0,
+      form: [], wins: 0, draws: 0, losses: 0, totalGames: 0, results: [],
+    };
+  }
+
+  const avg = (arr: number[]) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  const last5  = results.slice(0, 5);
+  const homeR  = results.filter(r => r.isHome);
+  const awayR  = results.filter(r => !r.isHome);
+  const cleanSheets = results.filter(r => r.goalsConceded === 0).length;
+  const btts        = results.filter(r => r.goalsScored > 0 && r.goalsConceded > 0).length;
+
+  return {
+    avgGoalsScored:      avg(results.map(r => r.goalsScored)),
+    avgGoalsConceded:    avg(results.map(r => r.goalsConceded)),
+    avgGoalsScoredL5:    avg(last5.map(r => r.goalsScored)),
+    avgGoalsConcededL5:  avg(last5.map(r => r.goalsConceded)),
+    avgGoalsScoredHome:  avg(homeR.map(r => r.goalsScored)),
+    avgGoalsConcededHome:avg(homeR.map(r => r.goalsConceded)),
+    avgGoalsScoredAway:  avg(awayR.map(r => r.goalsScored)),
+    avgGoalsConcededAway:avg(awayR.map(r => r.goalsConceded)),
+    cleanSheets,
+    cleanSheetsPct: Math.round(cleanSheets / n * 100),
+    bttsPct:        Math.round(btts / n * 100),
+    form:   results.slice(0, 5).map(r => r.result),
+    wins:   results.filter(r => r.result === "W").length,
+    draws:  results.filter(r => r.result === "D").length,
+    losses: results.filter(r => r.result === "L").length,
+    totalGames: n,
+    results,
+  };
+}
+
+/**
+ * Fetch a team's last N results from their BetExplorer team results page
+ * and compute aggregated stats (avg goals scored/conceded, form, clean sheets, etc.)
+ */
+export async function fetchBETeamStats(
+  teamSlug: string,
+  teamId: string,
+  n = 20,
+  log?: (msg: string) => void,
+): Promise<BETeamStats | null> {
+  const url = `${BASE}/football/team/${teamSlug}/${teamId}/results/`;
+  log?.(`[BetExplorer] Fetching team results: ${url}`);
+  try {
+    const resp = await torFetch(url, {
+      headers: {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-GB,en;q=0.9",
+        "Referer": `${BASE}/football/`,
+      },
+      redirect: "follow",
+      timeout: 20_000,
+    });
+    if (!resp.ok) { log?.(`[BetExplorer] Team results HTTP ${resp.status}`); return null; }
+    const html = await resp.text();
+    const parsed = parseTeamResultsHtml(html).slice(0, n);
+    if (!parsed.length) { log?.(`[BetExplorer] Team results: no rows found`); return null; }
+    const stats = computeBETeamStats(parsed);
+    log?.(`[BetExplorer] Team results: ${parsed.length} games, avg GS=${stats.avgGoalsScored.toFixed(2)}, GC=${stats.avgGoalsConceded.toFixed(2)}, form=${stats.form.join("")}`);
+    return stats;
+  } catch (e) {
+    log?.(`[BetExplorer] Team results fetch error: ${e}`);
+    return null;
+  }
 }

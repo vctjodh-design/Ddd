@@ -70,7 +70,9 @@ export const GetFixturesResponse = zod.object({
   "countrySlug": zod.string(),
   "countryFlag": zod.string(),
   "winnerCode": zod.number().nullish().describe('100 = home win, 200 = away win, 300 = draw'),
-  "hasHighlights": zod.boolean()
+  "hasHighlights": zod.boolean(),
+  "dataSource": zod.string().nullish().describe('statshub | betexplorer — source of this fixture'),
+  "beMatchId": zod.string().nullish().describe('BetExplorer match ID (present for betexplorer-sourced fixtures)')
 }))
 }))
 })

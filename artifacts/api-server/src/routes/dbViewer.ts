@@ -38,6 +38,7 @@ router.get("/db/matches", (req, res) => {
       hasAwayStats: !!m.has_stats,
       hasPlayer:    !!m.has_player,
       hasOdds:      !!m.has_odds,
+      dataSource:   m.data_source ?? null,
       createdAt:    m.created_at,
     })),
   });
@@ -69,6 +70,9 @@ router.get("/db/match/:id", (req, res) => {
       awayStats:       parseJson(m.away_team_stats_json),
       homePlayerStats: parseJson(m.home_player_stats_json),
       awayPlayerStats: parseJson(m.away_player_stats_json),
+      dataSource:      m.data_source ?? "statshub",
+      beHomeStats:     parseJson(m.be_home_stats_json),
+      beAwayStats:     parseJson(m.be_away_stats_json),
       odds: {
         "1x2":  parseJson(m.po_1x2_json),
         "ou":   parseJson(m.po_ou_json),
@@ -98,6 +102,9 @@ router.get("/db/match/:id", (req, res) => {
     awayStats:       parseJson(m.away_stats_json),
     homePlayerStats: null,
     awayPlayerStats: null,
+    dataSource:      "statshub",
+    beHomeStats:     null,
+    beAwayStats:     null,
     odds: {
       "1x2":  parseJson(m.odds_1x2_json),
       "ou":   parseJson(m.odds_ou_json),

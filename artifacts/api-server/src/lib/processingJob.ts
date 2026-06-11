@@ -1,9 +1,12 @@
 /**
  * Processing job runner — date-based pipeline.
- * Stage 1: Fetch all fixtures for a date from StatsHub
- * Stage 2: Fetch team stats + player stats from StatsHub
- * Stage 3: Fetch odds from BetExplorer.com (plain HTTP, no Playwright needed)
- * Stage 4: Store everything in processing_matches
+ *
+ * BetExplorer is the PRIMARY fixture source.
+ * StatsHub is used as ENRICHMENT when a match can be fuzzy-matched.
+ *
+ * For each finished BE match:
+ *   - If found on StatsHub: use full SH pipeline (team stats + player stats + BE odds)
+ *   - If not on StatsHub: fetch BE team page stats + BE odds, store as 'betexplorer' source
  */
 
 import {
@@ -15,7 +18,8 @@ import { fetchStatsHubTeamHistory } from "./statsHub.js";
 import {
   fetchBetExplorerMatches,
   fetchMatchMarkets,
-  findBestBEMatch,
+  fetchMatchPageData,
+  fetchBETeamStats,
   type BEMatch,
   type BEMatchMarkets,
 } from "./betExplorer.js";
@@ -245,6 +249,33 @@ export async function fetchPlayerStats(teamId: number): Promise<unknown[]> {
   }
 }
 
+// ── SH fuzzy-match helper ─────────────────────────────────────────────────────
+
+function normStr(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function nameSim(a: string, b: string): number {
+  const na = normStr(a), nb = normStr(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  if (na.includes(nb) || nb.includes(na)) return 0.85;
+  const wa = new Set(na.split(" ")), wb = new Set(nb.split(" "));
+  const inter = [...wa].filter(w => wb.has(w)).length;
+  const union = new Set([...wa, ...wb]).size;
+  return union === 0 ? 0 : inter / union;
+}
+
+function findSHFixture(beMatch: BEMatch, shFixtures: ParsedFixture[]): ParsedFixture | null {
+  let best: { fx: ParsedFixture; score: number } | null = null;
+  for (const fx of shFixtures) {
+    const score = (nameSim(beMatch.homeTeam, fx.homeTeamName) + nameSim(beMatch.awayTeam, fx.awayTeamName)) / 2;
+    if (!best || score > best.score) best = { fx, score };
+  }
+  return best && best.score >= 0.45 ? best.fx : null;
+}
+
 // ── Main job runner ──────────────────────────────────────────────────────────
 
 async function runJob(jobId: string, params: StartProcessingParams) {
@@ -260,157 +291,214 @@ async function runJob(jobId: string, params: StartProcessingParams) {
     updateProcessingJob(jobId, { status: "running" });
     log(`Starting processing for date: ${params.date}`);
 
-    // ── Stage 1: Fetch all fixtures from StatsHub ────────────────────────────
-    log(`Fetching fixtures from StatsHub…`);
-    let fixtures: ParsedFixture[] = [];
+    // ── Stage 1: Fetch BetExplorer fixtures (primary source) ─────────────────
+    log(`Fetching fixtures from BetExplorer (primary source)…`);
+    let beMatches: BEMatch[] = [];
     try {
-      fixtures = await fetchFixturesForDate(params.date);
-      log(`Found ${fixtures.length} fixture(s) on StatsHub for ${params.date}`);
+      beMatches = await fetchBetExplorerMatches(params.date, log);
+      const finished = beMatches.filter(m => m.isFinished).length;
+      log(`BetExplorer: ${beMatches.length} match(es) total, ${finished} finished, ${beMatches.length - finished} upcoming`);
     } catch (e) {
-      log(`⚠ StatsHub fixtures failed: ${e}`);
+      log(`⚠ BetExplorer fetch failed: ${e}`);
       updateProcessingJob(jobId, { status: "failed", error_message: String(e) });
       return;
     }
 
-    if (fixtures.length === 0) {
-      log(`No fixtures found for ${params.date}. Job complete.`);
+    const finishedBeMatches = beMatches.filter(m => m.isFinished);
+    if (finishedBeMatches.length === 0) {
+      log(`No finished fixtures found on BetExplorer for ${params.date}. Job complete.`);
       updateProcessingJob(jobId, { status: "complete", total_matches: 0 });
       return;
     }
 
-    updateProcessingJob(jobId, { total_matches: fixtures.length });
-
-    // ── Stage 2: Fetch odds from BetExplorer (plain HTTP) ───────────────────
-    log(`Fetching odds from BetExplorer.com for ${params.date}…`);
-    let beMatches: BEMatch[] = [];
+    // ── Stage 1b: Fetch StatsHub fixtures in parallel (enrichment) ───────────
+    log(`Fetching StatsHub fixtures (enrichment)…`);
+    let shFixtures: ParsedFixture[] = [];
     try {
-      beMatches = await fetchBetExplorerMatches(params.date, log);
-      const withOdds = beMatches.filter(m => m.bestHomeOdds !== null).length;
-      log(`BetExplorer: ${beMatches.length} match(es) found, ${withOdds} with best 1x2 odds available`);
+      shFixtures = await fetchFixturesForDate(params.date);
+      log(`StatsHub: ${shFixtures.length} fixture(s) found`);
     } catch (e) {
-      log(`⚠ BetExplorer fetch failed: ${e} — continuing without odds`);
+      log(`⚠ StatsHub fetch failed: ${e} — continuing in BE-only mode`);
     }
 
-    // ── Stage 3: Process each fixture ───────────────────────────────────────
+    updateProcessingJob(jobId, { total_matches: finishedBeMatches.length });
+
     let processed = 0;
     let stored = 0;
 
-    for (const fx of fixtures) {
+    for (const beMatch of finishedBeMatches) {
       processed++;
-      const label = `${fx.homeTeamName} vs ${fx.awayTeamName}`;
+      const label = `${beMatch.homeTeam} vs ${beMatch.awayTeam}`;
       updateProcessingJob(jobId, { processed, stored, current_match: label });
-      log(`[${processed}/${fixtures.length}] ${label} (${fx.leagueName}, ${fx.countryName})`);
+      log(`[${processed}/${finishedBeMatches.length}] ${label} (${beMatch.league ?? "Unknown"}, ${beMatch.country ?? "Unknown"})`);
 
-      // Fetch team stats, player stats in parallel
-      const matchTs = fx.kickoffTs || undefined;
-      const [[homeTeamStats, awayTeamStats], [homePlayerStats, awayPlayerStats]] = await Promise.all([
-        Promise.all([
-          fetchStatsHubTeamHistory(fx.homeTeamId, matchTs).catch(() => null),
-          fetchStatsHubTeamHistory(fx.awayTeamId, matchTs).catch(() => null),
-        ]),
-        Promise.all([
-          fetchPlayerStats(fx.homeTeamId),
-          fetchPlayerStats(fx.awayTeamId),
-        ]),
-      ]);
+      // Try to find this match on StatsHub
+      const shFx = findSHFixture(beMatch, shFixtures);
 
-      const homeStatMatches = homeTeamStats?.statHistory?.[0]?.matches?.length ?? 0;
-      const awayStatMatches = awayTeamStats?.statHistory?.[0]?.matches?.length ?? 0;
-      const bothTeamStatsNull = homeTeamStats === null && awayTeamStats === null;
-      const oneTeamStatNull   = (homeTeamStats === null) !== (awayTeamStats === null);
+      if (shFx) {
+        // ── StatsHub-enriched path ───────────────────────────────────────────
+        log(`  ↳ StatsHub match: ${shFx.homeTeamName} vs ${shFx.awayTeamName} (${shFx.status})`);
 
-      log(`  ↳ Team stats: home=${homeTeamStats ? homeStatMatches + " match(es)" : "n/a"}, away=${awayTeamStats ? awayStatMatches + " match(es)" : "n/a"}${bothTeamStatsNull ? " (no league data — likely international)" : ""}`);
-      log(`  ↳ Player stats: home=${homePlayerStats.length} games, away=${awayPlayerStats.length} games`);
+        const matchTs = shFx.kickoffTs || undefined;
+        const [[homeTeamStats, awayTeamStats], [homePlayerStats, awayPlayerStats]] = await Promise.all([
+          Promise.all([
+            fetchStatsHubTeamHistory(shFx.homeTeamId, matchTs).catch(() => null),
+            fetchStatsHubTeamHistory(shFx.awayTeamId, matchTs).catch(() => null),
+          ]),
+          Promise.all([
+            fetchPlayerStats(shFx.homeTeamId),
+            fetchPlayerStats(shFx.awayTeamId),
+          ]),
+        ]);
 
-      // ── Condition 1: Match must be finished (score known, not in-progress/not-started) ──
-      const finishedStatuses = ["notstarted", "inprogress", "postponed", "cancelled", "abandoned"];
-      const isFinished = !finishedStatuses.includes(fx.status.toLowerCase()) &&
-                         fx.homeScore !== null && fx.awayScore !== null;
-      if (!isFinished) {
-        log(`  ↳ ⏭ Skipped — match not finished (status="${fx.status}", score=${fx.homeScore ?? "?"}:${fx.awayScore ?? "?"})`);
-        continue;
-      }
+        const homeStatMatches = homeTeamStats?.statHistory?.[0]?.matches?.length ?? 0;
+        const awayStatMatches = awayTeamStats?.statHistory?.[0]?.matches?.length ?? 0;
+        const bothTeamStatsNull = homeTeamStats === null && awayTeamStats === null;
+        const oneTeamStatNull   = (homeTeamStats === null) !== (awayTeamStats === null);
 
-      // ── Condition 2: Team stats must exist for both sides ──
-      // Exception: if NEITHER team has StatsHub league data (e.g. international/national teams),
-      // we allow the match through — it will be stored based on conditions 1 & 4 alone.
-      if (oneTeamStatNull) {
-        // One team has stats, the other doesn't — asymmetric data, skip.
-        log(`  ↳ ⏭ Skipped — team stats only available for one side`);
-        continue;
-      }
-      if (!bothTeamStatsNull && (homeStatMatches === 0 || awayStatMatches === 0)) {
-        // Both have StatsHub objects but match history is empty — genuine data gap.
-        log(`  ↳ ⏭ Skipped — team stats exist but match history is empty (home=${homeStatMatches}, away=${awayStatMatches})`);
-        continue;
-      }
+        log(`  ↳ Team stats: home=${homeTeamStats ? homeStatMatches + " match(es)" : "n/a"}, away=${awayTeamStats ? awayStatMatches + " match(es)" : "n/a"}${bothTeamStatsNull ? " (no league data)" : ""}`);
+        log(`  ↳ Player stats: home=${homePlayerStats.length} games, away=${awayPlayerStats.length} games`);
 
-      // ── Condition 3: Player stats must exist for both sides ──
-      // Also waived for international matches (bothTeamStatsNull) where StatsHub
-      // last-games data may not cover national team fixtures.
-      if (!bothTeamStatsNull && (homePlayerStats.length === 0 || awayPlayerStats.length === 0)) {
-        log(`  ↳ ⏭ Skipped — player stats missing (home=${homePlayerStats.length}, away=${awayPlayerStats.length})`);
-        continue;
-      }
+        const finishedStatuses = ["notstarted", "inprogress", "postponed", "cancelled", "abandoned"];
+        const isFinished = !finishedStatuses.includes(shFx.status.toLowerCase()) &&
+                           shFx.homeScore !== null && shFx.awayScore !== null;
+        if (!isFinished) {
+          log(`  ↳ ⏭ Skipped — SH match not finished (status="${shFx.status}")`);
+          continue;
+        }
+        if (oneTeamStatNull) {
+          log(`  ↳ ⏭ Skipped — team stats only available for one side`);
+          continue;
+        }
+        if (!bothTeamStatsNull && (homeStatMatches === 0 || awayStatMatches === 0)) {
+          log(`  ↳ ⏭ Skipped — team stat history empty`);
+          continue;
+        }
+        if (!bothTeamStatsNull && (homePlayerStats.length === 0 || awayPlayerStats.length === 0)) {
+          log(`  ↳ ⏭ Skipped — player stats missing`);
+          continue;
+        }
 
-      // Find match on BetExplorer and fetch per-bookmaker market odds
-      const beMatch = findBestBEMatch(fx.homeTeamName, fx.awayTeamName, beMatches);
-      let markets: BEMatchMarkets | null = null;
-
-      if (beMatch) {
-        const oddStr = `H=${beMatch.bestHomeOdds} D=${beMatch.bestDrawOdds} A=${beMatch.bestAwayOdds}`;
-        log(`  ↳ BetExplorer: matched "${beMatch.homeTeam} vs ${beMatch.awayTeam}" — ${oddStr}`);
+        // Fetch odds
+        let markets: BEMatchMarkets | null = null;
         try {
           markets = await fetchMatchMarkets(beMatch.matchId, beMatch.matchUrl, log);
           const total = Object.values(markets).reduce((s, arr) => s + arr.length, 0);
-          log(`  ↳ BetExplorer: ${total} total bookmaker-market entries stored`);
+          log(`  ↳ BetExplorer: ${total} bookmaker-market entries`);
         } catch (e) {
-          log(`  ↳ BetExplorer: market fetch failed: ${e}`);
+          log(`  ↳ BetExplorer: odds fetch failed: ${e}`);
         }
+
+        const has1x2 = markets?.["1x2"] && markets["1x2"].length > 0;
+        if (!has1x2) { log(`  ↳ ⏭ Skipped — 1x2 odds unavailable`); continue; }
+
+        const toJson = (arr: unknown[] | undefined) => arr && arr.length > 0 ? JSON.stringify(arr) : null;
+
+        insertProcessingMatch({
+          job_id:               jobId,
+          date:                 params.date,
+          home_team:            shFx.homeTeamName,
+          away_team:            shFx.awayTeamName,
+          home_team_id:         shFx.homeTeamId,
+          away_team_id:         shFx.awayTeamId,
+          league_name:          shFx.leagueName,
+          league_id:            shFx.leagueId,
+          country_name:         shFx.countryName,
+          country_flag:         shFx.countryFlag,
+          kickoff_ts:           shFx.kickoffTs,
+          home_score:           shFx.homeScore,
+          away_score:           shFx.awayScore,
+          status:               shFx.status,
+          home_team_stats_json: homeTeamStats   ? JSON.stringify(homeTeamStats)   : null,
+          away_team_stats_json: awayTeamStats   ? JSON.stringify(awayTeamStats)   : null,
+          home_player_stats_json: homePlayerStats.length ? JSON.stringify(homePlayerStats) : null,
+          away_player_stats_json: awayPlayerStats.length ? JSON.stringify(awayPlayerStats) : null,
+          po_1x2_json:  toJson(markets?.["1x2"]),
+          po_ou_json:   toJson(markets?.ou),
+          po_ah_json:   toJson(markets?.ah),
+          po_btts_json: toJson(markets?.btts),
+          po_dc_json:   toJson(markets?.dc),
+          po_dnb_json:  toJson(markets?.dnb),
+          data_source:          "statshub",
+          be_home_stats_json:   null,
+          be_away_stats_json:   null,
+        });
+        stored++;
+        log(`  ↳ ✓ Stored (StatsHub)`);
+
       } else {
-        log(`  ↳ BetExplorer: no match found`);
+        // ── BE-only path ─────────────────────────────────────────────────────
+        log(`  ↳ Not on StatsHub — using BetExplorer team stats`);
+
+        // Fetch match page to get team links + score
+        const matchData = await fetchMatchPageData(beMatch.matchUrl, log);
+        if (!matchData) {
+          log(`  ↳ ⏭ Skipped — couldn't extract team links from match page`);
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+
+        // Fetch BE team stats with 3 s delay between requests (rate-limit safety)
+        const homeTeamStats = await fetchBETeamStats(matchData.homeSlug, matchData.homeId, 20, log);
+        await new Promise(r => setTimeout(r, 3000));
+        const awayTeamStats = await fetchBETeamStats(matchData.awaySlug, matchData.awayId, 20, log);
+
+        log(`  ↳ BE team stats: home=${homeTeamStats ? `${homeTeamStats.totalGames} games, avg GS=${homeTeamStats.avgGoalsScored.toFixed(2)}` : "n/a"}, away=${awayTeamStats ? `${awayTeamStats.totalGames} games, avg GS=${awayTeamStats.avgGoalsScored.toFixed(2)}` : "n/a"}`);
+
+        // Fetch all 6 markets
+        let markets: BEMatchMarkets | null = null;
+        try {
+          markets = await fetchMatchMarkets(beMatch.matchId, beMatch.matchUrl, log);
+          const total = Object.values(markets).reduce((s, arr) => s + arr.length, 0);
+          log(`  ↳ BetExplorer: ${total} bookmaker-market entries`);
+        } catch (e) {
+          log(`  ↳ BetExplorer: odds fetch failed: ${e}`);
+        }
+
+        const has1x2 = markets?.["1x2"] && markets["1x2"].length > 0;
+        if (!has1x2) { log(`  ↳ ⏭ Skipped — 1x2 odds unavailable`); continue; }
+
+        const toJson = (arr: unknown[] | undefined) => arr && arr.length > 0 ? JSON.stringify(arr) : null;
+
+        // Kickoff timestamp from time string + date
+        const [y, mo, d] = params.date.split("-").map(Number);
+        const [h, min] = beMatch.kickoffTime.split(":").map(Number);
+        const kickoffTs = Math.floor(Date.UTC(y, mo - 1, d, h, min, 0) / 1000);
+
+        insertProcessingMatch({
+          job_id:        jobId,
+          date:          params.date,
+          home_team:     beMatch.homeTeam,
+          away_team:     beMatch.awayTeam,
+          home_team_id:  null,
+          away_team_id:  null,
+          league_name:   beMatch.league ?? null,
+          league_id:     null,
+          country_name:  beMatch.country ?? null,
+          country_flag:  null,
+          kickoff_ts:    kickoffTs,
+          home_score:    matchData.homeScore,
+          away_score:    matchData.awayScore,
+          status:        "finished",
+          home_team_stats_json:   null,
+          away_team_stats_json:   null,
+          home_player_stats_json: null,
+          away_player_stats_json: null,
+          po_1x2_json:  toJson(markets?.["1x2"]),
+          po_ou_json:   toJson(markets?.ou),
+          po_ah_json:   toJson(markets?.ah),
+          po_btts_json: toJson(markets?.btts),
+          po_dc_json:   toJson(markets?.dc),
+          po_dnb_json:  toJson(markets?.dnb),
+          data_source:        "betexplorer",
+          be_home_stats_json: homeTeamStats ? JSON.stringify(homeTeamStats) : null,
+          be_away_stats_json: awayTeamStats ? JSON.stringify(awayTeamStats) : null,
+        });
+        stored++;
+        log(`  ↳ ✓ Stored (BetExplorer)`);
       }
 
-      // ── Condition 4: 1x2 odds from BetExplorer must be present ──
-      const has1x2 = markets?.["1x2"] && markets["1x2"].length > 0;
-      if (!has1x2) {
-        log(`  ↳ ⏭ Skipped — BetExplorer 1x2 odds not available`);
-        continue;
-      }
-
-      const toJson = (arr: unknown[] | undefined) =>
-        arr && arr.length > 0 ? JSON.stringify(arr) : null;
-
-      insertProcessingMatch({
-        job_id:               jobId,
-        date:                 params.date,
-        home_team:            fx.homeTeamName,
-        away_team:            fx.awayTeamName,
-        home_team_id:         fx.homeTeamId,
-        away_team_id:         fx.awayTeamId,
-        league_name:          fx.leagueName,
-        league_id:            fx.leagueId,
-        country_name:         fx.countryName,
-        country_flag:         fx.countryFlag,
-        kickoff_ts:           fx.kickoffTs,
-        home_score:           fx.homeScore,
-        away_score:           fx.awayScore,
-        status:               fx.status,
-        home_team_stats_json:    homeTeamStats   ? JSON.stringify(homeTeamStats)   : null,
-        away_team_stats_json:    awayTeamStats   ? JSON.stringify(awayTeamStats)   : null,
-        home_player_stats_json:  homePlayerStats.length ? JSON.stringify(homePlayerStats) : null,
-        away_player_stats_json:  awayPlayerStats.length ? JSON.stringify(awayPlayerStats) : null,
-        po_1x2_json:   toJson(markets?.["1x2"]),
-        po_ou_json:    toJson(markets?.ou),
-        po_ah_json:    toJson(markets?.ah),
-        po_btts_json:  toJson(markets?.btts),
-        po_dc_json:    toJson(markets?.dc),
-        po_dnb_json:   toJson(markets?.dnb),
-      });
-
-      stored++;
-      log(`  ↳ ✓ Stored`);
-      // Brief pause between fixtures (per-market calls already have 900ms delays)
+      // Brief pause between fixtures
       await new Promise(r => setTimeout(r, 300));
     }
 
@@ -420,7 +508,7 @@ async function runJob(jobId: string, params: StartProcessingParams) {
       stored,
       current_match: null,
     });
-    log(`✅ Done. Stored ${stored}/${fixtures.length} matches for ${params.date}`);
+    log(`✅ Done. Stored ${stored}/${finishedBeMatches.length} finished matches for ${params.date} (${shFixtures.length > 0 ? "SH enrichment available" : "BE-only mode"})`);
 
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

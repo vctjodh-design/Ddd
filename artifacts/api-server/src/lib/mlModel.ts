@@ -151,6 +151,15 @@ export interface MatchFeatures {
   homeRating: number; awayRating: number;
 }
 
+// Local BETeamStats shape (mirrors betExplorer.ts export, avoids circular dep)
+interface BETeamStats {
+  avgGoalsScored: number;
+  avgGoalsConceded: number;
+  avgGoalsScoredL5: number;
+  avgGoalsConcededL5: number;
+  form: Array<"W" | "D" | "L">;
+}
+
 type MatchLike = {
   home_team_stats_json?: string | null;
   away_team_stats_json?: string | null;
@@ -166,11 +175,17 @@ type MatchLike = {
   odds_ou_json?: string | null;
   po_dc_json?: string | null;
   odds_dc_json?: string | null;
+  be_home_stats_json?: string | null;
+  be_away_stats_json?: string | null;
 };
 
 export function extractFeatures(m: MatchLike): MatchFeatures {
-  const hs = safeJson<SHTeamStats>(m.home_team_stats_json ?? m.home_stats_json ?? null);
+  const hs  = safeJson<SHTeamStats>(m.home_team_stats_json ?? m.home_stats_json ?? null);
   const as_ = safeJson<SHTeamStats>(m.away_team_stats_json ?? m.away_stats_json ?? null);
+
+  // BetExplorer team stats — used as fallback when StatsHub data is absent
+  const beH = safeJson<BETeamStats>(m.be_home_stats_json ?? null);
+  const beA = safeJson<BETeamStats>(m.be_away_stats_json ?? null);
 
   const hG  = findStat(hs,  "Goals", "Goal");
   const aG  = findStat(as_, "Goals", "Goal");
@@ -195,20 +210,37 @@ export function extractFeatures(m: MatchLike): MatchFeatures {
   const hp = safeJson<PlayerGame[]>(m.home_player_stats_json ?? null);
   const ap = safeJson<PlayerGame[]>(m.away_player_stats_json ?? null);
 
+  // Goal/form values: prefer StatsHub; fall back to BE stats when SH is absent
+  const hGoalsAvg     = hs !== null ? statAvg(hG, "myValue")          : (beH?.avgGoalsScored    ?? 0);
+  const hGoalsConcAvg = hs !== null ? statAvg(hG, "opponentValue")     : (beH?.avgGoalsConceded  ?? 0);
+  const hGoalsL5      = hs !== null ? statAvg(hG, "myValue", 5)        : (beH?.avgGoalsScoredL5  ?? 0);
+  const hGoalsConcL5  = hs !== null ? statAvg(hG, "opponentValue", 5)  : (beH?.avgGoalsConcededL5 ?? 0);
+  const hFormW        = hs !== null ? formCount(hG, "W")               : (beH?.form.slice(0,5).filter(r => r === "W").length ?? 0);
+  const hFormD        = hs !== null ? formCount(hG, "D")               : (beH?.form.slice(0,5).filter(r => r === "D").length ?? 0);
+  const hFormL        = hs !== null ? formCount(hG, "L")               : (beH?.form.slice(0,5).filter(r => r === "L").length ?? 0);
+
+  const aGoalsAvg     = as_ !== null ? statAvg(aG, "myValue")         : (beA?.avgGoalsScored    ?? 0);
+  const aGoalsConcAvg = as_ !== null ? statAvg(aG, "opponentValue")   : (beA?.avgGoalsConceded  ?? 0);
+  const aGoalsL5      = as_ !== null ? statAvg(aG, "myValue", 5)      : (beA?.avgGoalsScoredL5  ?? 0);
+  const aGoalsConcL5  = as_ !== null ? statAvg(aG, "opponentValue", 5): (beA?.avgGoalsConcededL5 ?? 0);
+  const aFormW        = as_ !== null ? formCount(aG, "W")             : (beA?.form.slice(0,5).filter(r => r === "W").length ?? 0);
+  const aFormD        = as_ !== null ? formCount(aG, "D")             : (beA?.form.slice(0,5).filter(r => r === "D").length ?? 0);
+  const aFormL        = as_ !== null ? formCount(aG, "L")             : (beA?.form.slice(0,5).filter(r => r === "L").length ?? 0);
+
   return {
     oddsHome: homeI ?? 0, oddsDraw: drawI ?? 0, oddsAway: awayI ?? 0,
     oddsBttsY: bttsYI ?? 0, oddsOver25: overI ?? 0,
-    homeGoalsAvg: statAvg(hG, "myValue"), homeGoalsConcAvg: statAvg(hG, "opponentValue"),
-    homeGoalsL5: statAvg(hG, "myValue", 5), homeGoalsConcL5: statAvg(hG, "opponentValue", 5),
+    homeGoalsAvg: hGoalsAvg, homeGoalsConcAvg: hGoalsConcAvg,
+    homeGoalsL5: hGoalsL5, homeGoalsConcL5: hGoalsConcL5,
     homeCornersAvg: statAvg(hC, "myValue"), homeCornersL5: statAvg(hC, "myValue", 5),
     homeShotsAvg: statAvg(hS, "myValue"), homeXgAvg: statAvg(hXG, "myValue"),
-    homeFormW: formCount(hG, "W"), homeFormD: formCount(hG, "D"), homeFormL: formCount(hG, "L"),
+    homeFormW: hFormW, homeFormD: hFormD, homeFormL: hFormL,
     homePossession: hs?.possession ?? 50,
-    awayGoalsAvg: statAvg(aG, "myValue"), awayGoalsConcAvg: statAvg(aG, "opponentValue"),
-    awayGoalsL5: statAvg(aG, "myValue", 5), awayGoalsConcL5: statAvg(aG, "opponentValue", 5),
+    awayGoalsAvg: aGoalsAvg, awayGoalsConcAvg: aGoalsConcAvg,
+    awayGoalsL5: aGoalsL5, awayGoalsConcL5: aGoalsConcL5,
     awayCornersAvg: statAvg(aC, "myValue"), awayCornersL5: statAvg(aC, "myValue", 5),
     awayShotsAvg: statAvg(aS, "myValue"), awayXgAvg: statAvg(aXG, "myValue"),
-    awayFormW: formCount(aG, "W"), awayFormD: formCount(aG, "D"), awayFormL: formCount(aG, "L"),
+    awayFormW: aFormW, awayFormD: aFormD, awayFormL: aFormL,
     awayPossession: as_?.possession ?? 50,
     homeRating: avgPlayerRating(hp), awayRating: avgPlayerRating(ap),
   };

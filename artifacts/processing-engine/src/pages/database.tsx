@@ -34,6 +34,7 @@ interface MatchSummary {
   hasAwayStats: boolean;
   hasPlayer: boolean;
   hasOdds: boolean;
+  dataSource?: string | null;
   createdAt: number;
 }
 
@@ -51,6 +52,9 @@ interface MatchDetail {
   awayStats: unknown;
   homePlayerStats: unknown;
   awayPlayerStats: unknown;
+  dataSource?: string | null;
+  beHomeStats?: unknown;
+  beAwayStats?: unknown;
   odds: Record<string, unknown>;
 }
 
@@ -214,6 +218,90 @@ function computeTeamAnalytic(teamStats: SHTeamStats | null): TeamAnalytic {
   });
 
   return { form, stats };
+}
+
+// ── BetExplorer team stats panel ──────────────────────────────────────────────
+
+interface BETeamStatsData {
+  avgGoalsScored: number;
+  avgGoalsConceded: number;
+  avgGoalsScoredL5: number;
+  avgGoalsConcededL5: number;
+  form: Array<"W" | "D" | "L">;
+  totalGames: number;
+}
+
+function BETeamStatsPanel({
+  homeTeam, awayTeam, homeBeStats, awayBeStats,
+}: {
+  homeTeam: string;
+  awayTeam: string;
+  homeBeStats: BETeamStatsData | null;
+  awayBeStats: BETeamStatsData | null;
+}) {
+  function TeamPanel({ team, stats }: { team: string; stats: BETeamStatsData | null }) {
+    return (
+      <div className="p-4 space-y-4">
+        <div className="text-[9px] font-mono text-primary/60 uppercase tracking-widest border-b border-border/20 pb-2">
+          {team}{stats ? ` · last ${stats.totalGames} games` : ""}
+        </div>
+        {!stats ? (
+          <div className="text-[10px] font-mono text-muted-foreground/30 italic">No data available</div>
+        ) : (
+          <>
+            <div className="space-y-3">
+              {[
+                { label: "Avg Goals Scored",   all: stats.avgGoalsScored,   l5: stats.avgGoalsScoredL5 },
+                { label: "Avg Goals Conceded", all: stats.avgGoalsConceded, l5: stats.avgGoalsConcededL5 },
+              ].map(({ label, all, l5 }) => (
+                <div key={label} className="flex items-center gap-3">
+                  <span className="text-[9px] font-mono text-muted-foreground/50 w-36 uppercase tracking-wide shrink-0">{label}</span>
+                  <span className="text-[14px] font-mono font-bold text-foreground">{all.toFixed(2)}</span>
+                  <span className="text-[9px] font-mono text-primary/50">L5: {l5.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+            <div>
+              <div className="text-[8px] font-mono text-muted-foreground/40 uppercase tracking-widest mb-1.5">
+                Recent Form ({stats.form.length} games)
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {stats.form.slice(0, 15).map((r, i) => <ResultBadge key={i} r={r} />)}
+              </div>
+              <div className="mt-1.5 text-[9px] font-mono text-muted-foreground/40">
+                <span className="text-green-400">{stats.form.filter(r => r === "W").length}W</span>
+                <span className="mx-1 text-muted-foreground/20">·</span>
+                <span className="text-yellow-400">{stats.form.filter(r => r === "D").length}D</span>
+                <span className="mx-1 text-muted-foreground/20">·</span>
+                <span className="text-red-400">{stats.form.filter(r => r === "L").length}L</span>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  if (!homeBeStats && !awayBeStats) {
+    return (
+      <div className="flex items-center justify-center h-32 text-muted-foreground/40 text-xs font-mono">
+        No BetExplorer team stats available for this match
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="text-[9px] font-mono text-muted-foreground/30 px-4 py-2 border-b border-border/20 bg-orange-500/3">
+        <span className="text-orange-400/60">BE Source</span>
+        <span className="ml-2">· Goals & form data sourced from BetExplorer team pages</span>
+      </div>
+      <div className="grid grid-cols-2 divide-x divide-border/30">
+        <TeamPanel team={homeTeam} stats={homeBeStats} />
+        <TeamPanel team={awayTeam} stats={awayBeStats} />
+      </div>
+    </div>
+  );
 }
 
 // ── Odds types ────────────────────────────────────────────────────────────────
@@ -1114,7 +1202,7 @@ const MARKETS: Array<[string, string]> = [
 function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () => void }) {
   const [match, setMatch] = useState<MatchDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<"odds" | "stats" | "players">("odds");
+  const [tab, setTab] = useState<"odds" | "stats" | "bestats" | "players">("odds");
   const [selectedMarket, setSelectedMarket] = useState("1x2");
   const [playerView, setPlayerView] = useState<"summary" | "games">("summary");
 
@@ -1138,6 +1226,9 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
 
   const homeStats = match?.homeStats as SHTeamStats | null;
   const awayStats = match?.awayStats as SHTeamStats | null;
+  const beHomeStats = match?.beHomeStats as BETeamStatsData | null;
+  const beAwayStats = match?.beAwayStats as BETeamStatsData | null;
+  const isBESource = match?.dataSource === "betexplorer";
 
   const homeAnalytic = useMemo(() => computeTeamAnalytic(homeStats), [homeStats]);
   const awayAnalytic = useMemo(() => computeTeamAnalytic(awayStats), [awayStats]);
@@ -1205,13 +1296,15 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
             {/* Tab bar */}
             <div className="flex border-b border-border/30 flex-shrink-0">
               {([
-                ["odds",   `Bookmaker Odds${availableMarkets.length ? ` (${availableMarkets.length})` : ""}`],
-                ["stats",  "Team Stats"],
+                ["odds",    `Bookmaker Odds${availableMarkets.length ? ` (${availableMarkets.length})` : ""}`],
+                ...(isBESource
+                  ? [["bestats", "BE Stats"]]
+                  : [["stats", "Team Stats"]]),
                 ...(match.homePlayerStats || match.awayPlayerStats ? [["players", "Players"]] : []),
               ] as [string, string][]).map(([t, label]) => (
                 <button
                   key={t}
-                  onClick={() => setTab(t as "odds" | "stats" | "players")}
+                  onClick={() => setTab(t as "odds" | "stats" | "bestats" | "players")}
                   className={`px-6 py-2.5 text-[10px] font-mono uppercase tracking-widest border-b-2 transition-all ${
                     tab === t
                       ? "border-primary text-primary bg-primary/5"
@@ -1311,7 +1404,7 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
                 </div>
               )}
 
-              {/* ── STATS TAB ── */}
+              {/* ── STATS TAB (StatsHub) ── */}
               {tab === "stats" && (
                 <div className="flex flex-col flex-1 overflow-hidden">
                   <StatComparisonTable
@@ -1321,6 +1414,18 @@ function MatchDetailModal({ matchId, onClose }: { matchId: string; onClose: () =
                     awayStats={awayStats}
                     homeAnalytic={homeAnalytic}
                     awayAnalytic={awayAnalytic}
+                  />
+                </div>
+              )}
+
+              {/* ── BE STATS TAB (BetExplorer) ── */}
+              {tab === "bestats" && (
+                <div className="flex flex-col flex-1 overflow-hidden">
+                  <BETeamStatsPanel
+                    homeTeam={match.homeTeam}
+                    awayTeam={match.awayTeam}
+                    homeBeStats={beHomeStats}
+                    awayBeStats={beAwayStats}
                   />
                 </div>
               )}
@@ -1634,11 +1739,13 @@ export default function DatabasePage() {
                         <td className="px-2 py-2 text-center">{dot(m.hasOdds)}</td>
                         <td className="px-2 py-2 text-center">
                           <span className={`text-[8px] font-mono uppercase px-1 border ${
-                            m.source === "processing"
+                            m.dataSource === "betexplorer"
+                              ? "border-orange-500/40 text-orange-400/60"
+                              : m.source === "processing"
                               ? "border-primary/30 text-primary/50"
                               : "border-border/40 text-muted-foreground/40"
                           }`}>
-                            {m.source === "processing" ? "live" : "bulk"}
+                            {m.dataSource === "betexplorer" ? "be" : m.source === "processing" ? "live" : "bulk"}
                           </span>
                         </td>
                         <td className="px-3 py-2 text-right" onClick={e => e.stopPropagation()}>

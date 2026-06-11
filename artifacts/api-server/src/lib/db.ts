@@ -162,6 +162,18 @@ function initSchema(db: Database.Database) {
     if (smCols.includes(col)) db.exec(`ALTER TABLE stored_matches DROP COLUMN ${col}`);
   }
 
+  // Migration: add BE-only match data columns to processing_matches
+  const pmColsFull = (db.prepare("PRAGMA table_info(processing_matches)").all() as { name: string }[]).map(c => c.name);
+  if (!pmColsFull.includes("data_source")) {
+    db.exec(`ALTER TABLE processing_matches ADD COLUMN data_source TEXT DEFAULT 'statshub'`);
+  }
+  if (!pmColsFull.includes("be_home_stats_json")) {
+    db.exec(`ALTER TABLE processing_matches ADD COLUMN be_home_stats_json TEXT`);
+  }
+  if (!pmColsFull.includes("be_away_stats_json")) {
+    db.exec(`ALTER TABLE processing_matches ADD COLUMN be_away_stats_json TEXT`);
+  }
+
   // Same dedup + unique index for stored_matches
   const smUniqueExists = (db.prepare(
     `SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_sm_unique'`
@@ -367,6 +379,7 @@ export interface ViewerMatchRow {
   has_stats: number;
   has_odds: number;
   has_player: number;
+  data_source: string | null;
   created_at: number;
 }
 
@@ -378,14 +391,16 @@ export function listAllMatchesForViewer(opts: { limit: number; offset: number })
            CASE WHEN home_stats_json IS NOT NULL AND away_stats_json IS NOT NULL THEN 1 ELSE 0 END as has_stats,
            CASE WHEN odds_1x2_json IS NOT NULL THEN 1 ELSE 0 END as has_odds,
            0 as has_player,
+           NULL as data_source,
            created_at
     FROM stored_matches
     UNION ALL
     SELECT id, 'processing' as source, date, home_team, away_team,
            home_score, away_score, league_name, country_name,
-           CASE WHEN home_team_stats_json IS NOT NULL THEN 1 ELSE 0 END as has_stats,
+           CASE WHEN home_team_stats_json IS NOT NULL OR be_home_stats_json IS NOT NULL THEN 1 ELSE 0 END as has_stats,
            CASE WHEN po_1x2_json IS NOT NULL THEN 1 ELSE 0 END as has_odds,
            CASE WHEN home_player_stats_json IS NOT NULL THEN 1 ELSE 0 END as has_player,
+           data_source,
            created_at
     FROM processing_matches
     ORDER BY date DESC, created_at DESC
@@ -502,6 +517,9 @@ export interface ProcessingMatch {
   po_btts_json: string | null;
   po_dc_json: string | null;
   po_dnb_json: string | null;
+  data_source: string;
+  be_home_stats_json: string | null;
+  be_away_stats_json: string | null;
   created_at: number;
 }
 
@@ -517,8 +535,10 @@ export function insertProcessingMatch(m: Omit<ProcessingMatch, "id" | "created_a
      home_team_stats_json, away_team_stats_json,
      home_player_stats_json, away_player_stats_json,
      po_1x2_json, po_ou_json, po_ah_json, po_btts_json,
-     po_dc_json, po_dnb_json, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     po_dc_json, po_dnb_json,
+     data_source, be_home_stats_json, be_away_stats_json,
+     created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     id, m.job_id, m.date, m.home_team, m.away_team,
     m.home_team_id ?? null, m.away_team_id ?? null,
@@ -530,6 +550,8 @@ export function insertProcessingMatch(m: Omit<ProcessingMatch, "id" | "created_a
     m.home_player_stats_json ?? null, m.away_player_stats_json ?? null,
     m.po_1x2_json ?? null, m.po_ou_json ?? null, m.po_ah_json ?? null,
     m.po_btts_json ?? null, m.po_dc_json ?? null, m.po_dnb_json ?? null,
+    m.data_source ?? "statshub",
+    m.be_home_stats_json ?? null, m.be_away_stats_json ?? null,
     now
   );
   return { id, inserted: result.changes > 0 };

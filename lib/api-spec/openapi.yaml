@@ -165,6 +165,12 @@ components:
           description: "100 = home win, 200 = away win, 300 = draw"
         hasHighlights:
           type: boolean
+        dataSource:
+          type: ["string", "null"]
+          description: "statshub | betexplorer — source of this fixture"
+        beMatchId:
+          type: ["string", "null"]
+          description: "BetExplorer match ID (present for betexplorer-sourced fixtures)"
       required:
         - id
         - slug

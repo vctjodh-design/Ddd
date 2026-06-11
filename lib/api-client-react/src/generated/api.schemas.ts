@@ -57,6 +57,16 @@ export interface Fixture {
      */
   winnerCode?: number | null;
   hasHighlights: boolean;
+  /**
+     * statshub | betexplorer — source of this fixture
+     * @nullable
+     */
+  dataSource?: string | null;
+  /**
+     * BetExplorer match ID (present for betexplorer-sourced fixtures)
+     * @nullable
+     */
+  beMatchId?: string | null;
 }
 
 export interface LeagueGroup {
