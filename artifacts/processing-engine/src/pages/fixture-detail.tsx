@@ -1112,10 +1112,60 @@ function ProbBar({ label, modelPct, impliedPct, odds }: { label: string; modelPc
   );
 }
 
+// ─── BE Stats Bar ──────────────────────────────────────────────────────────────
+
+interface BETeamStatsShape {
+  avgGoalsScored: number; avgGoalsConceded: number;
+  avgGoalsScoredL5: number; avgGoalsConcededL5: number;
+  cleanSheetsPct: number; bttsPct: number;
+  wins: number; draws: number; losses: number; totalGames: number;
+  form: Array<"W" | "D" | "L">;
+}
+
+function BEStatsBar({ homeStats, awayStats, homeColor, awayColor }: {
+  homeStats: BETeamStatsShape; awayStats: BETeamStatsShape;
+  homeColor: string; awayColor: string;
+}) {
+  const formCls = (r: "W" | "D" | "L") =>
+    r === "W" ? "bg-green-500/20 text-green-400 border-green-500/40"
+    : r === "D" ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/40"
+    : "bg-red-500/20 text-red-400 border-red-500/40";
+
+  const row = (label: string, hVal: string, aVal: string) => (
+    <div key={label} className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 py-1.5 px-3 border-b border-border/15 last:border-0">
+      <div className="text-right font-mono text-sm font-bold" style={{ color: homeColor }}>{hVal}</div>
+      <div className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground/40 text-center w-28">{label}</div>
+      <div className="text-left font-mono text-sm font-bold" style={{ color: awayColor }}>{aVal}</div>
+    </div>
+  );
+
+  return (
+    <div className="border border-border/30 bg-card/20 overflow-hidden">
+      <div className="text-center py-1 bg-card/30 border-b border-border/20">
+        <span className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground/40">BetExplorer Stats</span>
+      </div>
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 py-2 px-3 border-b border-border/15">
+        <div className="flex gap-0.5 justify-end">{homeStats.form.slice(0, 5).map((r, i) => <span key={i} className={`text-[9px] font-bold font-mono px-1 py-0.5 border ${formCls(r)}`}>{r}</span>)}</div>
+        <div className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground/40 text-center w-28">Form</div>
+        <div className="flex gap-0.5 justify-start">{awayStats.form.slice(0, 5).map((r, i) => <span key={i} className={`text-[9px] font-bold font-mono px-1 py-0.5 border ${formCls(r)}`}>{r}</span>)}</div>
+      </div>
+      {row("Avg Scored (all)", homeStats.avgGoalsScored.toFixed(2), awayStats.avgGoalsScored.toFixed(2))}
+      {row("Avg Conceded (all)", homeStats.avgGoalsConceded.toFixed(2), awayStats.avgGoalsConceded.toFixed(2))}
+      {row("Avg Scored (L5)", homeStats.avgGoalsScoredL5.toFixed(2), awayStats.avgGoalsScoredL5.toFixed(2))}
+      {row("Avg Conceded (L5)", homeStats.avgGoalsConcededL5.toFixed(2), awayStats.avgGoalsConcededL5.toFixed(2))}
+      {row("BTTS %", `${homeStats.bttsPct.toFixed(0)}%`, `${awayStats.bttsPct.toFixed(0)}%`)}
+      {row("Clean Sheet %", `${homeStats.cleanSheetsPct.toFixed(0)}%`, `${awayStats.cleanSheetsPct.toFixed(0)}%`)}
+      {row("W / D / L", `${homeStats.wins}/${homeStats.draws}/${homeStats.losses}`, `${awayStats.wins}/${awayStats.draws}/${awayStats.losses}`)}
+    </div>
+  );
+}
+
 function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, kickoffTs }: {
   homeTeamId: number; awayTeamId: number;
   homeTeam: string; awayTeam: string; kickoffTs: number;
 }) {
+  const isBEFixture = homeTeamId === 0 || awayTeamId === 0;
+
   const [pred, setPred] = useState<FixturePrediction | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("Predicting…");
@@ -1131,17 +1181,34 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
 
   const runPrediction = async () => {
     setLoading(true); setErr(null); setPred(null);
-    setLoadingMsg("Fetching live data…");
-    const msgTimer = setTimeout(() => setLoadingMsg("Scraping stats & odds…"), 5000);
     try {
-      const r = await fetch("/api/model/predict-live", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ homeTeamId, awayTeamId, homeTeam, awayTeam, kickoffTs }),
-      });
-      if (!r.ok) { setErr("error"); return; }
-      setPred(await r.json());
-    } catch { setErr("error"); } finally { clearTimeout(msgTimer); setLoading(false); }
+      if (isBEFixture) {
+        setLoadingMsg("Looking up stored match data…");
+        const r = await fetch("/api/model/predict-by-teams", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ homeTeam, awayTeam, kickoffTs }),
+        });
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}));
+          setErr((body as { error?: string }).error === "no_data" ? "no_data" : "error");
+          return;
+        }
+        setPred(await r.json());
+      } else {
+        setLoadingMsg("Fetching live data…");
+        const msgTimer = setTimeout(() => setLoadingMsg("Scraping stats & odds…"), 5000);
+        try {
+          const r = await fetch("/api/model/predict-live", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ homeTeamId, awayTeamId, homeTeam, awayTeam, kickoffTs }),
+          });
+          if (!r.ok) { setErr("error"); return; }
+          setPred(await r.json());
+        } finally { clearTimeout(msgTimer); }
+      }
+    } catch { setErr("error"); } finally { setLoading(false); }
   };
 
   const imp = pred?.impliedProbs ?? {};
@@ -1177,9 +1244,21 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
         </div>
       )}
 
+      {isBEFixture && !pred && !loading && !err && trained !== false && (
+        <div className="text-[11px] font-mono text-sky-400/60 border border-sky-500/20 bg-sky-500/5 p-3">
+          ℹ BetExplorer fixture — prediction uses historical stored data (no live StatsHub scrape).
+        </div>
+      )}
+
       {err === "error" && (
         <div className="text-[11px] font-mono text-destructive/70 border border-destructive/20 p-3">
           Prediction failed — check the server logs.
+        </div>
+      )}
+
+      {err === "no_data" && (
+        <div className="text-[11px] font-mono text-amber-400/70 border border-amber-500/20 bg-amber-500/5 p-3">
+          ⚠ No stored data found for these teams — process this match from the home page first, then retry.
         </div>
       )}
 
@@ -1476,6 +1555,15 @@ export default function FixtureDetail() {
               </div>
             </div>
           </motion.div>
+
+          {isBE && data?.home?.beStats && data?.away?.beStats && (
+            <BEStatsBar
+              homeStats={data.home.beStats as BETeamStatsShape}
+              awayStats={data.away.beStats as BETeamStatsShape}
+              homeColor={fixture.homeTeam.colorPrimary ?? "#22d3ee"}
+              awayColor={fixture.awayTeam.colorPrimary ?? "#f97316"}
+            />
+          )}
 
           <div className="flex gap-0 border-b border-border/50 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
             {(["home", "away", "compare", "analysis", "odds", "predictions"] as const).map(tab => (
