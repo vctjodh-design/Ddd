@@ -7,6 +7,7 @@ import Home from "@/pages/home";
 import FixtureDetail from "@/pages/fixture-detail";
 import DatabasePage from "@/pages/database";
 import ProcessingPage from "@/pages/processing";
+import TesterPage from "@/pages/tester";
 
 const queryClient = new QueryClient();
 
@@ -17,6 +18,7 @@ function Router() {
       <Route path="/fixture/:id" component={FixtureDetail} />
       <Route path="/database" component={DatabasePage} />
       <Route path="/processing" component={ProcessingPage} />
+      <Route path="/tester" component={TesterPage} />
       <Route component={NotFound} />
     </Switch>
   );

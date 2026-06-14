@@ -7,6 +7,7 @@ import bulkRouter from "./bulk.js";
 import dbViewerRouter from "./dbViewer.js";
 import processingRouter from "./processing.js";
 import modelRouter from "./model.js";
+import testerRouter from "./tester.js";
 
 const router: IRouter = Router();
 
@@ -18,5 +19,6 @@ router.use(bulkRouter);
 router.use(dbViewerRouter);
 router.use(processingRouter);
 router.use(modelRouter);
+router.use(testerRouter);
 
 export default router;

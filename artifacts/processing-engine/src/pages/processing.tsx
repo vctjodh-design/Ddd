@@ -283,9 +283,10 @@ export default function ProcessingPage() {
           </div>
           <nav className="flex items-center gap-1">
             {[
-              { label: "Fixtures", path: "/" },
+              { label: "Fixtures",   path: "/" },
               { label: "Processing", path: "/processing", active: true },
-              { label: "Database", path: "/database" },
+              { label: "Tester",     path: "/tester" },
+              { label: "Database",   path: "/database" },
             ].map(n => (
               <button
                 key={n.path}

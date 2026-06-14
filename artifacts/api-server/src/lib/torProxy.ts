@@ -283,4 +283,43 @@ export async function rotateCircuit(
   } catch { /* ignore */ }
 }
 
+/**
+ * Verify current Tor circuit quality by checking exit country,
+ * rotating up to maxRetries times until an EU exit is found.
+ * Returns true if an EU exit is confirmed, false otherwise.
+ */
+export async function ensureEuCircuit(
+  log?: (msg: string) => void,
+  maxRetries = 8,
+): Promise<boolean> {
+  if (TOR_DISABLED) return false;
+  await startBootstrap();
+  if (!torReady || !torAgent) return false;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const country = await getExitCountry(torAgent);
+    const msg = `[TorProxy] ensureEuCircuit attempt ${attempt}/${maxRetries}: country=${country ?? "unknown"}`;
+    logger.info(msg);
+    if (log) log(msg);
+
+    if (country && EU_COUNTRIES.has(country)) {
+      const ok = `[TorProxy] EU exit confirmed: ${country}`;
+      logger.info(ok);
+      if (log) log(ok);
+      return true;
+    }
+
+    const rotate = `[TorProxy] Non-EU exit (${country ?? "?"}) — rotating circuit, waiting ${NEWNYM_DELAY}ms…`;
+    logger.info(rotate);
+    if (log) log(rotate);
+    await sendNewnym();
+    await new Promise(r => setTimeout(r, NEWNYM_DELAY));
+  }
+
+  const warn = `[TorProxy] ensureEuCircuit: could not confirm EU exit after ${maxRetries} attempts`;
+  logger.warn(warn);
+  if (log) log(warn);
+  return false;
+}
+
 export { torReady, torFailed, TOR_DISABLED };

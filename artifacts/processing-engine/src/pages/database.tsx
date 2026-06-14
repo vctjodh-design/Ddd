@@ -1645,14 +1645,20 @@ export default function DatabasePage() {
               <Database className="w-4 h-4" /> Database
             </span>
           </div>
-          <button
-            onClick={load}
-            disabled={refreshing}
-            className="w-8 h-8 flex items-center justify-center text-muted-foreground hover:text-primary transition-colors"
-            title="Refresh"
-          >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => navigate("/tester")}
+              className="text-[10px] font-mono uppercase tracking-widest px-2 py-1 border border-transparent text-muted-foreground hover:text-primary hover:border-border transition-all"
+            >Tester</button>
+            <button
+              onClick={load}
+              disabled={refreshing}
+              className="w-8 h-8 flex items-center justify-center text-muted-foreground hover:text-primary transition-colors"
+              title="Refresh"
+            >
+              <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
+            </button>
+          </div>
         </div>
       </header>
 

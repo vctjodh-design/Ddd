@@ -617,6 +617,15 @@ export default function Home() {
               <Activity className="w-3.5 h-3.5" />
               <span>Processing</span>
             </button>
+            <div className="w-px h-4 bg-border hidden sm:block" />
+            <button
+              onClick={() => navigate("/tester")}
+              className="hidden sm:flex items-center gap-1.5 text-muted-foreground hover:text-primary transition-colors uppercase tracking-widest"
+              title="Tester — predict without storing scores"
+            >
+              <Activity className="w-3.5 h-3.5" />
+              <span>Tester</span>
+            </button>
           </div>
         </div>
       </header>
