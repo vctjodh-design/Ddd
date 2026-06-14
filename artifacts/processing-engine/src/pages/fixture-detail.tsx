@@ -2,10 +2,11 @@ import React, { useState, useRef } from "react";
 import { useParams, useLocation } from "wouter";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Activity, ChevronLeft, ChevronRight, Lock, Brain, Star, TrendingUp, Zap } from "lucide-react";
+import { ArrowLeft, Activity, ChevronLeft, ChevronRight, Lock, Brain, Star, TrendingUp, Zap, Wand2 } from "lucide-react";
 import { useGetFixtureDetail } from "@workspace/api-client-react";
 import PlayerAnalysisPanel from "@/components/PlayerAnalysisPanel";
 import BettingOddsPanel from "@/components/BettingOddsPanel";
+import WizardModal from "@/components/WizardModal";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1452,6 +1453,7 @@ export default function FixtureDetail() {
   const { id } = useParams<{ id: string }>();
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState<"home" | "away" | "compare" | "analysis" | "odds" | "predictions">("home");
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const isBE = id?.startsWith("be-") ?? false;
   const beMatchId = isBE ? id!.slice(3) : null;
@@ -1541,8 +1543,19 @@ export default function FixtureDetail() {
         <main className="container mx-auto px-4 pb-20 flex-1 space-y-6 pt-6">
           <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
             className="border border-border/50 bg-card/40 overflow-hidden">
-            <div className="text-center py-1.5 bg-card/60 border-b border-border/40">
+            <div className="flex items-center justify-between py-1.5 px-4 bg-card/60 border-b border-border/40">
+              <div className="flex-1" />
               <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">{fixture.leagueName}</span>
+              <div className="flex-1 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setWizardOpen(true)}
+                  className="flex items-center gap-1.5 px-2.5 py-1 border border-cyan-500/30 text-cyan-400/60 hover:border-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10 transition-all text-[9px] font-mono uppercase tracking-widest"
+                >
+                  <Wand2 className="w-3 h-3" />
+                  Wizard
+                </button>
+              </div>
             </div>
             <div className="py-5 px-4 flex items-center justify-between gap-4">
               <div className="flex-1 text-right">
@@ -1648,6 +1661,18 @@ export default function FixtureDetail() {
           </AnimatePresence>
         </main>
       )}
+
+      {/* Futuristic Data Wizard Modal */}
+      <AnimatePresence>
+        {wizardOpen && fixture && (
+          <WizardModal
+            fetchUrl={`/api/db/wizard?home=${encodeURIComponent(fixture.homeTeam.name)}&away=${encodeURIComponent(fixture.awayTeam.name)}&date=${format(new Date(fixture.kickoffTimestamp * 1000), "yyyy-MM-dd")}`}
+            homeTeam={fixture.homeTeam.name}
+            awayTeam={fixture.awayTeam.name}
+            onClose={() => setWizardOpen(false)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
