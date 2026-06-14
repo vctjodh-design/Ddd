@@ -6,8 +6,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Activity, Clock, ShieldAlert,
   ChevronLeft, ChevronRight, CalendarDays, X, Search,
-  Upload, Database as DatabaseIcon, Loader2,
+  Upload, Database as DatabaseIcon, Loader2, Wand2,
 } from "lucide-react";
+import WizardModal from "@/components/WizardModal";
 import {
   useGetFixtures,
   getGetFixturesQueryKey,
@@ -486,6 +487,7 @@ export default function Home() {
   const [uploadModal, setUploadModal]   = useState<{
     leagueName: string; countryName: string; suggestedPath: string;
   } | null>(null);
+  const [wizardFixture, setWizardFixture] = useState<{ homeTeam: string; awayTeam: string; fetchUrl: string } | null>(null);
   const [pendingScrollY, setPendingScrollY] = useState<number | null>(
     restored ? restored.scrollY : null
   );
@@ -903,6 +905,24 @@ export default function Home() {
                               {fixture.awayTeam.name}
                             </span>
                           </div>
+
+                          {/* Wizard button */}
+                          <button
+                            type="button"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setWizardFixture({
+                                homeTeam: fixture.homeTeam.name,
+                                awayTeam: fixture.awayTeam.name,
+                                fetchUrl: `/api/db/wizard?home=${encodeURIComponent(fixture.homeTeam.name)}&away=${encodeURIComponent(fixture.awayTeam.name)}&date=${formattedDate}`,
+                              });
+                            }}
+                            title="Open Futuristic Data Wizard Analysis"
+                            className="flex-shrink-0 ml-2 flex items-center gap-1 px-2 py-1 border border-cyan-500/20 text-cyan-500/50 hover:border-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10 transition-all text-[8px] font-mono uppercase tracking-wide"
+                          >
+                            <Wand2 className="w-2.5 h-2.5" />
+                            <span className="hidden sm:inline">Wizard</span>
+                          </button>
                         </div>
                       );
                     })}
@@ -913,6 +933,18 @@ export default function Home() {
           </div>
         )}
       </main>
+
+      {/* Futuristic Data Wizard Modal — fixtures tab */}
+      <AnimatePresence>
+        {wizardFixture && (
+          <WizardModal
+            fetchUrl={wizardFixture.fetchUrl}
+            homeTeam={wizardFixture.homeTeam}
+            awayTeam={wizardFixture.awayTeam}
+            onClose={() => setWizardFixture(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

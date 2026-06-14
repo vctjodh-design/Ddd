@@ -247,6 +247,20 @@ export function getTesterMatchById(id: string): TesterMatch | null {
   return getTesterDb().prepare("SELECT * FROM tester_matches WHERE id = ?").get(id) as TesterMatch | null;
 }
 
+/** Lookup by team names + date — used by /api/db/wizard fallback when not in main DB */
+export function getTesterMatchByTeams(home: string, away: string, date: string): TesterMatch | null {
+  const db = getTesterDb();
+  const exact = db.prepare(
+    "SELECT * FROM tester_matches WHERE LOWER(home_team) = LOWER(?) AND LOWER(away_team) = LOWER(?) AND date = ? LIMIT 1"
+  ).get(home, away, date) as TesterMatch | null;
+  if (exact) return exact;
+  const hPfx = `%${home.slice(0, 7)}%`;
+  const aPfx = `%${away.slice(0, 7)}%`;
+  return db.prepare(
+    "SELECT * FROM tester_matches WHERE home_team LIKE ? AND away_team LIKE ? AND date = ? LIMIT 1"
+  ).get(hPfx, aPfx, date) as TesterMatch | null;
+}
+
 export function getTesterDbStats() {
   const db = getTesterDb();
   const jobs    = db.prepare("SELECT COUNT(*) as n FROM tester_jobs").get() as { n: number };

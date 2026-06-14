@@ -420,6 +420,21 @@ export function getProcessingMatchById(id: string): ProcessingMatch | null {
   return getDb().prepare("SELECT * FROM processing_matches WHERE id = ?").get(id) as ProcessingMatch | null;
 }
 
+/** Lookup by team names + date — case-insensitive exact first, then prefix fuzzy */
+export function getProcessingMatchByTeams(home: string, away: string, date: string): ProcessingMatch | null {
+  const db = getDb();
+  const exact = db.prepare(
+    "SELECT * FROM processing_matches WHERE LOWER(home_team) = LOWER(?) AND LOWER(away_team) = LOWER(?) AND date = ? LIMIT 1"
+  ).get(home, away, date) as ProcessingMatch | null;
+  if (exact) return exact;
+  // Fuzzy: first 6 chars of each team name
+  const hPfx = `%${home.slice(0, 7)}%`;
+  const aPfx = `%${away.slice(0, 7)}%`;
+  return db.prepare(
+    "SELECT * FROM processing_matches WHERE home_team LIKE ? AND away_team LIKE ? AND date = ? LIMIT 1"
+  ).get(hPfx, aPfx, date) as ProcessingMatch | null;
+}
+
 // ── Processing Job helpers ────────────────────────────────────────────────────
 
 export interface ProcessingJob {

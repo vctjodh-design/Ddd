@@ -6,8 +6,9 @@ import {
   FlaskConical, ChevronLeft, ChevronRight, CalendarDays,
   Play, Trash2, RefreshCw, ChevronDown, ChevronUp,
   TrendingUp, Target, Zap, BarChart2, AlertCircle,
-  CheckCircle2, Cpu,
+  CheckCircle2, Cpu, Wand2,
 } from "lucide-react";
+import WizardModal from "@/components/WizardModal";
 
 const TODAY = startOfDay(new Date());
 
@@ -314,7 +315,7 @@ function PredictionPanel({ pred, loading }: { pred: PredictionOutput | null; loa
 
 // ── Match row with expandable prediction ──────────────────────────────────────
 
-function MatchRow({ match }: { match: TesterMatchRow }) {
+function MatchRow({ match, onWizard }: { match: TesterMatchRow; onWizard: () => void }) {
   const [open, setOpen]         = useState(false);
   const [loading, setLoading]   = useState(false);
   const [pred, setPred]         = useState<PredictionOutput | null>(null);
@@ -347,9 +348,13 @@ function MatchRow({ match }: { match: TesterMatchRow }) {
 
   return (
     <div className={`border transition-all ${open ? "border-primary/30 bg-card/30" : "border-border/20 bg-card/10 hover:border-border/40"}`}>
-      <button
+      {/* Row header — uses div to allow nested buttons */}
+      <div
+        role="button"
+        tabIndex={0}
         onClick={handleToggle}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left"
+        onKeyDown={e => e.key === "Enter" && handleToggle()}
+        className="w-full flex items-center gap-3 px-4 py-3 text-left cursor-pointer select-none"
       >
         {/* Time */}
         <div className="w-10 flex-shrink-0 text-center">
@@ -384,13 +389,23 @@ function MatchRow({ match }: { match: TesterMatchRow }) {
           <span className={`text-[8px] font-mono uppercase tracking-widest px-1 ${match.dataSource === "statshub" ? "text-blue-400/70" : "text-muted-foreground/40"}`}>
             {match.dataSource === "statshub" ? "SH" : "BE"}
           </span>
+          {/* Wizard button — stop propagation so row toggle doesn't fire */}
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); onWizard(); }}
+            title="Open Futuristic Data Wizard Analysis"
+            className="flex items-center gap-1 px-2 py-0.5 border border-cyan-500/30 text-cyan-400/70 hover:border-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10 transition-all text-[8px] font-mono uppercase tracking-wide"
+          >
+            <Wand2 className="w-2.5 h-2.5" />
+            <span>Wizard</span>
+          </button>
         </div>
 
         {/* Toggle icon */}
         <div className="flex-shrink-0 text-muted-foreground/40">
           {open ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
         </div>
-      </button>
+      </div>
 
       <AnimatePresence>
         {open && (
@@ -432,6 +447,7 @@ export default function TesterPage() {
   const [starting, setStarting] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [wizardMatch, setWizardMatch] = useState<TesterMatchRow | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   const dateStr = fmtDate(selectedDate);
@@ -794,12 +810,24 @@ export default function TesterPage() {
             </div>
           ) : (
             <div className="divide-y divide-border/10">
-              {matches.map(m => <MatchRow key={m.id} match={m} />)}
+              {matches.map(m => <MatchRow key={m.id} match={m} onWizard={() => setWizardMatch(m)} />)}
             </div>
           )}
         </div>
 
       </div>
+
+      {/* Futuristic Data Wizard Modal */}
+      <AnimatePresence>
+        {wizardMatch && (
+          <WizardModal
+            fetchUrl={`/api/tester/wizard/${wizardMatch.id}`}
+            homeTeam={wizardMatch.homeTeam}
+            awayTeam={wizardMatch.awayTeam}
+            onClose={() => setWizardMatch(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

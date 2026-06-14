@@ -6,6 +6,7 @@ import {
   getTesterDbStats, clearAllTesterData,
 } from "../lib/testerDb.js";
 import { predictMatch } from "../lib/mlModel.js";
+import { analyzeMatch } from "../lib/wizardAnalysis.js";
 
 const router = Router();
 
@@ -95,6 +96,25 @@ router.post("/tester/predict/:id", (req, res) => {
       po_dc_json:   match.po_dc_json,
     });
     res.json({ ...prediction, bookieCount: match.bookie_count, dataSource: match.data_source });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** GET /api/tester/wizard/:id — pure data interpretation analysis, no odds/ML */
+router.get("/tester/wizard/:id", (req, res) => {
+  const match = getTesterMatchById(req.params.id);
+  if (!match) { res.status(404).json({ error: "Match not found" }); return; }
+  try {
+    const output = analyzeMatch({
+      homeName: match.home_team,
+      awayName: match.away_team,
+      homeTeamStatsJson:  match.home_team_stats_json,
+      awayTeamStatsJson:  match.away_team_stats_json,
+      beHomeStatsJson:    match.be_home_stats_json,
+      beAwayStatsJson:    match.be_away_stats_json,
+    });
+    res.json(output);
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

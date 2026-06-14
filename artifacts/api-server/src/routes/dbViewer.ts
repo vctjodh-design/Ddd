@@ -1,9 +1,11 @@
 import { Router } from "express";
 import {
   listAllMatchesForViewer, countAllMatchesForViewer,
-  getMatch, getProcessingMatchById,
+  getMatch, getProcessingMatchById, getProcessingMatchByTeams,
   deleteMatch, dbStats,
 } from "../lib/db.js";
+import { getTesterMatchByTeams } from "../lib/testerDb.js";
+import { analyzeMatch } from "../lib/wizardAnalysis.js";
 
 const router = Router();
 
@@ -115,6 +117,44 @@ router.get("/db/match/:id", (req, res) => {
     },
     createdAt: m.created_at,
   });
+});
+
+/** GET /api/db/wizard — wizard analysis for a fixtures-tab match.
+ *  Checks main processing DB first, then falls back to tester DB. */
+router.get("/db/wizard", (req, res) => {
+  const home = String(req.query["home"] ?? "").trim();
+  const away = String(req.query["away"] ?? "").trim();
+  const date = String(req.query["date"] ?? "").trim();
+  if (!home || !away || !date) {
+    res.status(400).json({ error: "home, away, date query params required" });
+    return;
+  }
+
+  // Try main DB first, then tester DB
+  const pm = getProcessingMatchByTeams(home, away, date);
+  const tm = pm ? null : getTesterMatchByTeams(home, away, date);
+  const m  = pm ?? tm;
+
+  if (!m) {
+    res.status(404).json({
+      error: `No processed data found for "${home}" vs "${away}" on ${date}. Process this fixture in the Tester tab first to generate stats.`,
+    });
+    return;
+  }
+
+  try {
+    const output = analyzeMatch({
+      homeName:          m.home_team,
+      awayName:          m.away_team,
+      homeTeamStatsJson: m.home_team_stats_json,
+      awayTeamStatsJson: m.away_team_stats_json,
+      beHomeStatsJson:   (m as { be_home_stats_json?: string | null }).be_home_stats_json ?? null,
+      beAwayStatsJson:   (m as { be_away_stats_json?: string | null }).be_away_stats_json ?? null,
+    });
+    res.json(output);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 /** DELETE /api/db/match/:id — remove a single stored match (processing matches not deletable via this route) */
