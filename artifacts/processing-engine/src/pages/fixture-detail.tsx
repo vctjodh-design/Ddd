@@ -3,10 +3,11 @@ import { useParams, useLocation } from "wouter";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft, Activity, ChevronLeft, ChevronRight, Lock, Brain, Star, TrendingUp, Zap, Wand2 } from "lucide-react";
-import { useGetFixtureDetail } from "@workspace/api-client-react";
+import { getGetFixtureDetailQueryKey, useGetFixtureDetail } from "@workspace/api-client-react";
 import PlayerAnalysisPanel from "@/components/PlayerAnalysisPanel";
 import BettingOddsPanel from "@/components/BettingOddsPanel";
 import WizardModal from "@/components/WizardModal";
+import ThreeLayerForecastPanel from "@/components/ThreeLayerForecastPanel";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1452,7 +1453,7 @@ function FixturePredictionPanel({ homeTeamId, awayTeamId, homeTeam, awayTeam, ki
 export default function FixtureDetail() {
   const { id } = useParams<{ id: string }>();
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState<"home" | "away" | "compare" | "analysis" | "odds" | "predictions">("home");
+  const [activeTab, setActiveTab] = useState<"home" | "away" | "compare" | "analysis" | "forecast" | "odds" | "predictions">("home");
   const [wizardOpen, setWizardOpen] = useState(false);
 
   const isBE = id?.startsWith("be-") ?? false;
@@ -1493,7 +1494,7 @@ export default function FixtureDetail() {
 
   const { data: shData, isLoading: shLoading, isError: shError } = useGetFixtureDetail(
     fixtureId,
-    { query: { enabled: !isBE && !!fixtureId } }
+    { query: { queryKey: getGetFixtureDetailQueryKey(fixtureId), enabled: !isBE && !!fixtureId } }
   );
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1600,7 +1601,7 @@ export default function FixtureDetail() {
           )}
 
           <div className="flex gap-0 border-b border-border/50 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
-            {(["home", "away", "compare", "analysis", "odds", "predictions"] as const).map(tab => (
+            {(["home", "away", "compare", "analysis", "forecast", "odds", "predictions"] as const).map(tab => (
               <button key={tab} onClick={() => setActiveTab(tab)}
                 className={`px-4 py-2 text-xs font-mono uppercase tracking-widest border-b-2 transition-all -mb-px whitespace-nowrap flex-shrink-0 flex items-center gap-1.5 ${
                   activeTab === tab ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
@@ -1609,6 +1610,7 @@ export default function FixtureDetail() {
                   : tab === "away" ? fixture.awayTeam.name
                   : tab === "compare" ? "Compare"
                   : tab === "analysis" ? "⚡ Analysis"
+                   : tab === "forecast" ? <><Wand2 className="w-3 h-3" />3-Layer Forecast</>
                   : tab === "odds" ? "📊 Odds"
                   : <><Brain className="w-3 h-3" />Predictions</>}
               </button>
@@ -1632,6 +1634,12 @@ export default function FixtureDetail() {
               <motion.div key="analysis" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <PlayerAnalysisPanel home={home} away={away} fixture={fixture} />
               </motion.div>
+            ) : activeTab === "forecast" && home && away ? (
+              <ThreeLayerForecastPanel
+                home={home}
+                away={away}
+                fixture={fixture}
+              />
             ) : activeTab === "odds" && home && away ? (
               <motion.div key="odds" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <BettingOddsPanel home={home} away={away} fixture={fixture} />
