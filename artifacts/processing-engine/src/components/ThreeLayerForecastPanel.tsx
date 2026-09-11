@@ -166,6 +166,7 @@ const CONVERGENCE_POOL: Score[] = [
   { home: 3, away: 3 }, { home: 4, away: 0 }, { home: 0, away: 4 },
   { home: 4, away: 1 }, { home: 1, away: 4 },
 ];
+const H2H_DISPLAY_LIMIT = 6;
 
 function normalizeTeamName(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -206,6 +207,41 @@ function matchesSamePair(match: ForecastMatch, homeName: string, awayName: strin
   );
 }
 
+function h2hMatchKey(match: ForecastMatch): string {
+  return match.eventId != null
+    ? `event:${match.eventId}`
+    : [
+        match.date ?? 0,
+        normalizeTeamName(match.homeTeamName ?? ""),
+        normalizeTeamName(match.awayTeamName ?? ""),
+        match.homeScore,
+        match.awayScore,
+      ].join(":");
+}
+
+function collectH2H(
+  homeTimeline: ForecastMatch[],
+  awayTimeline: ForecastMatch[],
+  fixture: ForecastFixture,
+): ForecastMatch[] {
+  const unique = new Map<string, ForecastMatch>();
+  [...homeTimeline, ...awayTimeline]
+    .filter(match => matchesSamePair(match, fixture.homeTeam.name, fixture.awayTeam.name))
+    .forEach(match => unique.set(h2hMatchKey(match), match));
+
+  return [...unique.values()]
+    .sort((a, b) => (a.date ?? 0) - (b.date ?? 0))
+    .slice(-H2H_DISPLAY_LIMIT);
+}
+
+function fixtureOrientedScore(match: ForecastMatch, fixture: ForecastFixture): Score {
+  const isFixtureHome =
+    normalizeTeamName(match.homeTeamName ?? "") === normalizeTeamName(fixture.homeTeam.name);
+  return isFixtureHome
+    ? { home: match.homeScore, away: match.awayScore }
+    : { home: match.awayScore, away: match.homeScore };
+}
+
 interface ConvergenceAnalysis {
   homeTimeline: ForecastMatch[];
   awayTimeline: ForecastMatch[];
@@ -230,7 +266,7 @@ function analyzeConvergence(
 ): ConvergenceAnalysis {
   const homeTimeline = chronologicalTimeline(home);
   const awayTimeline = chronologicalTimeline(away);
-  const h2h = homeTimeline.filter(match => matchesSamePair(match, fixture.homeTeam.name, fixture.awayTeam.name));
+  const h2h = collectH2H(homeTimeline, awayTimeline, fixture);
   const homeDrought = currentScoringDrought(homeTimeline);
   const awayDrought = currentScoringDrought(awayTimeline);
 
@@ -257,12 +293,13 @@ function analyzeConvergence(
   );
   const recentLowPlateau = recentH2h.length >= 2 && recentH2h.every(match => match.homeScore + match.awayScore <= 2);
   const h2hTrigger = heavyHistoricalVariance && recentLowPlateau;
-  const homeH2hWins = h2h.filter(match => (match.isHome ? match.homeScore : match.awayScore) > (match.isHome ? match.awayScore : match.homeScore)).length;
-  const awayH2hWins = h2h.length - homeH2hWins - h2h.filter(match => match.homeScore === match.awayScore).length;
+  const fixtureOrientedH2H = h2h.map(match => fixtureOrientedScore(match, fixture));
+  const fixtureHomeWins = fixtureOrientedH2H.filter(score => score.home > score.away).length;
+  const fixtureAwayWins = fixtureOrientedH2H.filter(score => score.away > score.home).length;
   const historicalEdge: ConvergenceAnalysis["historicalEdge"] = !h2h.length
     ? "unavailable"
-    : homeH2hWins > awayH2hWins ? "home"
-      : awayH2hWins > homeH2hWins ? "away"
+    : fixtureHomeWins > fixtureAwayWins ? "home"
+      : fixtureAwayWins > fixtureHomeWins ? "away"
         : "balanced";
 
   const layerThreeBefore = survivors;
@@ -370,12 +407,12 @@ function ConvergenceSieveSection({ home, away, fixture, forecast }: {
       </div>
 
       <div className="border border-border/20 bg-card/20 p-3">
-        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">Head-to-Head Historical Friction</div>
+        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">Head-to-Head Historical Friction · latest {H2H_DISPLAY_LIMIT}</div>
         {analysis.h2h.length ? (
           <div className="flex flex-wrap gap-1.5">
             {analysis.h2h.map((match, index) => (
               <span key={`${match.eventId ?? index}-${match.date ?? index}`} className="border border-purple-500/25 px-2 py-1 text-[10px] font-mono text-purple-200/80">
-                {index + 1}. {match.homeScore}–{match.awayScore}
+                {index + 1}. {scoreLabel(fixtureOrientedScore(match, fixture))}
               </span>
             ))}
           </div>
