@@ -197,6 +197,28 @@ function currentScoringDrought(timeline: ForecastMatch[]): number {
   return streak >= 2 ? streak : 0;
 }
 
+function goalsAgainstTeam(match: ForecastMatch): number {
+  return match.isHome ? match.awayScore : match.homeScore;
+}
+
+function lowVarianceGrinderCount(matches: ForecastMatch[]): number {
+  return matches.filter(match => match.homeScore + match.awayScore <= 1).length;
+}
+
+function wideGapCount(matches: ForecastMatch[]): number {
+  return matches.filter(match => match.homeScore + match.awayScore >= 4 || goalsAgainstTeam(match) >= 2).length;
+}
+
+function consecutiveHighScoringMatches(timeline: ForecastMatch[]): number {
+  let streak = 0;
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const match = timeline[index];
+    if (match.homeScore + match.awayScore >= 4 || goalsForTeam(match) >= 3) streak += 1;
+    else break;
+  }
+  return streak >= 2 ? streak : 0;
+}
+
 function matchesSamePair(match: ForecastMatch, homeName: string, awayName: string): boolean {
   if (!match.homeTeamName || !match.awayTeamName) return false;
   const home = normalizeTeamName(homeName);
@@ -246,15 +268,27 @@ interface ConvergenceAnalysis {
   homeTimeline: ForecastMatch[];
   awayTimeline: ForecastMatch[];
   h2h: ForecastMatch[];
+  homeGrinderCount: number;
+  homeWideGapCount: number;
+  awayWideGapCount: number;
+  lowVarianceFreeze: boolean;
+  wideGapEnvironment: boolean;
   homeDrought: number;
   awayDrought: number;
+  homeBlowoutStreak: number;
+  awayBlowoutStreak: number;
+  fatigueTax: boolean;
   survivors: Score[];
   layerOneRemoved: Score[];
   layerTwoRemoved: Score[];
   layerThreeRemoved: Score[];
   h2hTrigger: boolean;
+  closeH2H: boolean;
+  wildH2H: boolean;
   h2hAverageGoals: number;
+  h2hAverageMargin: number;
   historicalEdge: "home" | "away" | "balanced" | "unavailable";
+  breakTrigger: string;
   outlierTrigger: boolean;
 }
 
@@ -269,17 +303,29 @@ function analyzeConvergence(
   const h2h = collectH2H(homeTimeline, awayTimeline, fixture);
   const homeDrought = currentScoringDrought(homeTimeline);
   const awayDrought = currentScoringDrought(awayTimeline);
+  const homeVenueMatches = home.matches.filter(match => match.isHome && validMatch(match));
+  const awayVenueMatches = away.matches.filter(match => !match.isHome && validMatch(match));
+  const homeGrinderCount = lowVarianceGrinderCount(homeVenueMatches);
+  const homeWideGapCount = wideGapCount(homeVenueMatches);
+  const awayWideGapCount = wideGapCount(awayVenueMatches);
+  const lowVarianceFreeze = homeVenueMatches.length >= 4 && homeGrinderCount >= 2;
+  const wideGapEnvironment =
+    homeVenueMatches.length >= 4 &&
+    awayVenueMatches.length >= 4 &&
+    homeWideGapCount >= 2 &&
+    awayWideGapCount >= 2;
+  const homeBlowoutStreak = consecutiveHighScoringMatches(homeTimeline);
+  const awayBlowoutStreak = consecutiveHighScoringMatches(awayTimeline);
+  const fatigueTax = homeBlowoutStreak >= 2 || awayBlowoutStreak >= 2;
 
   let survivors = CONVERGENCE_POOL.map(score => ({ ...score }));
   const layerOneBefore = survivors;
-  if (forecast.sureVerdict === "Away win eliminated") {
-    survivors = survivors.filter(score => score.home >= score.away);
-  } else if (forecast.sureVerdict === "Home win eliminated") {
-    survivors = survivors.filter(score => score.away >= score.home);
-  }
+  if (lowVarianceFreeze) survivors = survivors.filter(score => score.home + score.away < 4);
+  if (wideGapEnvironment) survivors = survivors.filter(score => score.home + score.away >= 3);
   const layerOneRemoved = layerOneBefore.filter(score => !survivors.some(candidate => candidate.home === score.home && candidate.away === score.away));
 
   const layerTwoBefore = survivors;
+  if (fatigueTax) survivors = survivors.filter(score => score.home + score.away <= 2);
   if (homeDrought) survivors = survivors.filter(score => score.home > 0);
   if (awayDrought) survivors = survivors.filter(score => score.away > 0);
   const layerTwoRemoved = layerTwoBefore.filter(score => !survivors.some(candidate => candidate.home === score.home && candidate.away === score.away));
@@ -287,15 +333,17 @@ function analyzeConvergence(
   const h2hAverageGoals = h2h.length
     ? average(h2h.map(match => match.homeScore + match.awayScore))
     : 0;
-  const recentH2h = h2h.slice(-2);
-  const heavyHistoricalVariance = h2h.length >= 3 && (
-    h2hAverageGoals >= 3 || Math.max(...h2h.map(match => match.homeScore + match.awayScore)) >= 4
-  );
-  const recentLowPlateau = recentH2h.length >= 2 && recentH2h.every(match => match.homeScore + match.awayScore <= 2);
-  const h2hTrigger = heavyHistoricalVariance && recentLowPlateau;
   const fixtureOrientedH2H = h2h.map(match => fixtureOrientedScore(match, fixture));
   const fixtureHomeWins = fixtureOrientedH2H.filter(score => score.home > score.away).length;
   const fixtureAwayWins = fixtureOrientedH2H.filter(score => score.away > score.home).length;
+  const h2hAverageMargin = h2h.length
+    ? average(fixtureOrientedH2H.map(score => Math.abs(score.home - score.away)))
+    : 0;
+  const closeH2HCount = fixtureOrientedH2H.filter(score => Math.abs(score.home - score.away) <= 1).length;
+  const wildH2HCount = fixtureOrientedH2H.filter(score => Math.abs(score.home - score.away) >= 2).length;
+  const closeH2H = h2h.length >= 3 && closeH2HCount / h2h.length >= 0.67;
+  const wildH2H = h2h.length >= 3 && wildH2HCount / h2h.length >= 0.5 && h2hAverageMargin >= 1.5;
+  const h2hTrigger = closeH2H || wildH2H;
   const historicalEdge: ConvergenceAnalysis["historicalEdge"] = !h2h.length
     ? "unavailable"
     : fixtureHomeWins > fixtureAwayWins ? "home"
@@ -303,35 +351,57 @@ function analyzeConvergence(
         : "balanced";
 
   const layerThreeBefore = survivors;
-  if (h2hTrigger) {
-    survivors = survivors.filter(score => {
-      if (historicalEdge === "home") return score.home - score.away >= 2;
-      if (historicalEdge === "away") return score.away - score.home >= 2;
-      return score.home !== score.away;
-    });
-  }
+  if (closeH2H) survivors = survivors.filter(score => Math.abs(score.home - score.away) <= 1);
+  if (wildH2H) survivors = survivors.filter(score => score.home + score.away > 2);
   const layerThreeRemoved = layerThreeBefore.filter(score => !survivors.some(candidate => candidate.home === score.home && candidate.away === score.away));
+
+  const breakTrigger = lowVarianceFreeze
+    ? `Home venue produced ${homeGrinderCount} low-variance grinder(s), forcing the pool below four total goals.`
+    : wideGapEnvironment
+      ? `Both venue samples contain repeated wide-gap matches (${homeWideGapCount} home / ${awayWideGapCount} away), removing the lowest totals.`
+      : fatigueTax
+        ? `A ${Math.max(homeBlowoutStreak, awayBlowoutStreak)}-match high-scoring run triggered the regression-to-mean fatigue tax.`
+        : homeDrought || awayDrought
+          ? "A consecutive scoreless run triggered the anomaly-spike clean-sheet check."
+          : closeH2H
+            ? `The H2H average margin is ${h2hAverageMargin.toFixed(1)} goals and most meetings stayed within one goal.`
+            : wildH2H
+              ? `The H2H average margin is ${h2hAverageMargin.toFixed(1)} goals and at least half the meetings were wide-margin results.`
+              : "No single log statistic is strong enough to force a break from the current form trend.";
 
   const outlierTrigger = (
     forecast.combinedOverPct > 110 &&
     forecast.rawGoalLine >= 3.5 &&
-    !homeDrought &&
-    !awayDrought
-  ) || (h2hTrigger && h2hAverageGoals >= 3.5);
+    !fatigueTax &&
+    !lowVarianceFreeze &&
+    (wideGapEnvironment || wildH2H)
+  ) || (wildH2H && h2hAverageGoals >= 3.5 && !fatigueTax);
 
   return {
     homeTimeline,
     awayTimeline,
     h2h,
+    homeGrinderCount,
+    homeWideGapCount,
+    awayWideGapCount,
+    lowVarianceFreeze,
+    wideGapEnvironment,
     homeDrought,
     awayDrought,
+    homeBlowoutStreak,
+    awayBlowoutStreak,
+    fatigueTax,
     survivors,
     layerOneRemoved,
     layerTwoRemoved,
     layerThreeRemoved,
     h2hTrigger,
+    closeH2H,
+    wildH2H,
     h2hAverageGoals,
+    h2hAverageMargin,
     historicalEdge,
+    breakTrigger,
     outlierTrigger,
   };
 }
@@ -389,12 +459,12 @@ function ConvergenceSieveSection({ home, away, fixture, forecast }: {
           <span className="text-xs font-mono uppercase tracking-widest text-purple-200">The 13th Convergence: The Systemic Scoreline Sieve</span>
         </div>
         <p className="mt-2 text-[11px] leading-relaxed font-mono text-muted-foreground/70">
-          This matrix maps {fixture.homeTeam.name} and {fixture.awayTeam.name} across their available chronological timelines and filters the standard scoreline pool through venue polarization, scoring droughts, and H2H equilibrium reversion.
+          This matrix maps {fixture.homeTeam.name} and {fixture.awayTeam.name} across their latest 12 chronological matches and filters the universal scoreline pool through adaptive tactical style, trend exhaustion, and H2H margin reality.
         </p>
       </div>
 
       <div className="border border-purple-500/20 bg-background/20 p-3">
-        <div className="text-[10px] font-mono uppercase tracking-widest text-purple-200/70 mb-2">Candidate Pool</div>
+         <div className="text-[10px] font-mono uppercase tracking-widest text-purple-200/70 mb-2">Universal Candidate Pool · {CONVERGENCE_POOL.length} default scorelines</div>
         <CandidateChips scores={CONVERGENCE_POOL} muted />
       </div>
 
@@ -427,33 +497,35 @@ function ConvergenceSieveSection({ home, away, fixture, forecast }: {
         <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">⚙️ The Stratified Sifting Layers</div>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
           <div className="border border-border/20 bg-card/20 p-3 space-y-2">
-            <div className="text-[10px] font-mono font-bold text-cyan-200">Layer 1 · Venue Polarization</div>
+            <div className="text-[10px] font-mono font-bold text-cyan-200">Layer 1 · Tactical Environment</div>
             <p className="text-[10px] leading-relaxed font-mono text-muted-foreground/60">
-              {forecast.sureVerdict === "Away win eliminated"
-                ? "Home venue stability eliminated away-skewed results from the candidate field."
-                : forecast.sureVerdict === "Home win eliminated"
-                  ? "The mirrored weakness boundary eliminated home-skewed results from the candidate field."
-                  : "Neither venue boundary eliminated a result direction."}
+              {analysis.lowVarianceFreeze
+                ? `${fixture.homeTeam.name} recorded ${analysis.homeGrinderCount} low-variance home grinder(s), so totals of four or more were frozen out.`
+                : analysis.wideGapEnvironment
+                  ? `Both venue samples show repeated wide gaps (${analysis.homeWideGapCount} home / ${analysis.awayWideGapCount} away), so totals below three were removed.`
+                  : "Venue data did not meet either the low-variance freeze or wide-gap threshold."}
             </p>
             <div className="text-[9px] font-mono text-muted-foreground/40">{analysis.layerOneRemoved.length} candidates removed</div>
           </div>
           <div className="border border-border/20 bg-card/20 p-3 space-y-2">
-            <div className="text-[10px] font-mono font-bold text-cyan-200">Layer 2 · Inconsistency Drought</div>
+            <div className="text-[10px] font-mono font-bold text-cyan-200">Layer 2 · Trend Exhaustion</div>
             <p className="text-[10px] leading-relaxed font-mono text-muted-foreground/60">
-              {analysis.homeDrought || analysis.awayDrought
-                ? `${analysis.homeDrought ? `${fixture.homeTeam.name} has a ${analysis.homeDrought}-match scoring drought` : ""}${analysis.homeDrought && analysis.awayDrought ? " and " : ""}${analysis.awayDrought ? `${fixture.awayTeam.name} has a ${analysis.awayDrought}-match scoring drought` : ""}. Clean-sheet options for the dry side were removed.`
-                : "No current two-match scoring drought was detected, so this layer removes no clean-sheet options."}
+              {analysis.fatigueTax || analysis.homeDrought || analysis.awayDrought
+                ? `${analysis.fatigueTax ? "A recent blowout streak capped the pool at two total goals. " : ""}${analysis.homeDrought ? `${fixture.homeTeam.name} has a ${analysis.homeDrought}-match scoring drought. ` : ""}${analysis.awayDrought ? `${fixture.awayTeam.name} has a ${analysis.awayDrought}-match scoring drought. ` : ""}${analysis.homeDrought || analysis.awayDrought ? "Clean-sheet options for the dry side were removed." : ""}`
+                : "No blowout fatigue or consecutive scoreless streak was detected, so this layer stays neutral."}
             </p>
             <div className="text-[9px] font-mono text-muted-foreground/40">{analysis.layerTwoRemoved.length} candidates removed</div>
           </div>
           <div className="border border-border/20 bg-card/20 p-3 space-y-2">
-            <div className="text-[10px] font-mono font-bold text-cyan-200">Layer 3 · H2H Reversion</div>
+            <div className="text-[10px] font-mono font-bold text-cyan-200">Layer 3 · H2H Friction Reset</div>
             <p className="text-[10px] leading-relaxed font-mono text-muted-foreground/60">
-              {analysis.h2hTrigger
-                ? `Historical average is ${analysis.h2hAverageGoals.toFixed(1)} goals with a recent low-scoring plateau. ${analysis.historicalEdge === "balanced" ? "Balanced draws were removed." : `The ${analysis.historicalEdge} historical vector must win by at least two goals.`}`
+              {analysis.closeH2H
+                ? `The H2H average margin is ${analysis.h2hAverageMargin.toFixed(1)} goals; mostly close meetings removed blowout scores.`
+                : analysis.wildH2H
+                  ? `The H2H average margin is ${analysis.h2hAverageMargin.toFixed(1)} goals; repeated wide margins removed low-scoring stalemates.`
                 : analysis.h2h.length
-                  ? "The available H2H sequence did not meet the heavy-variance plus low-plateau trigger."
-                  : "No H2H friction matrix was available, so no equilibrium-reversion filter was applied."}
+                  ? `The available H2H sequence averaged ${analysis.h2hAverageMargin.toFixed(1)} goals of margin and did not meet a close or wild threshold.`
+                  : "No H2H friction matrix was available, so no margin filter was applied."}
             </p>
             <div className="text-[9px] font-mono text-muted-foreground/40">{analysis.layerThreeRemoved.length} candidates removed</div>
           </div>
@@ -465,17 +537,18 @@ function ConvergenceSieveSection({ home, away, fixture, forecast }: {
         <CandidateChips scores={analysis.survivors} />
         <p className="mt-3 text-[10px] leading-relaxed font-mono text-muted-foreground/70">
           {analysis.survivors.length
-            ? `The surviving field contains ${analysis.survivors.length} of ${CONVERGENCE_POOL.length} candidate scorelines. Football inconsistency${analysis.homeDrought || analysis.awayDrought ? " is collapsing low-scoring clean-sheet options because a scoring drought is active." : " does not currently trigger a drought-based collapse of low-scoring options."}`
+            ? `The surviving field contains ${analysis.survivors.length} of ${CONVERGENCE_POOL.length} candidate scorelines. The matrix can contract toward a defensive freeze or expand toward a wide-margin branch; it does not force either direction without supporting logs.`
             : "All listed candidates were eliminated by the active filters; this is the point at which the system should inspect an unlisted outlier rather than force a pool result."}
         </p>
       </div>
 
       <div className="border border-amber-500/25 bg-amber-500/5 p-3">
-        <div className="text-[10px] font-mono uppercase tracking-widest text-amber-200/80 mb-2">Ultimate question · outlier trigger</div>
+        <div className="text-[10px] font-mono uppercase tracking-widest text-amber-200/80 mb-2">Definitive form-break trigger · {analysis.outlierTrigger ? "ACTIVE" : "INACTIVE"}</div>
         <p className="text-[10px] leading-relaxed font-mono text-muted-foreground/70">
+          {analysis.breakTrigger}{" "}
           {analysis.outlierTrigger
-            ? "ACTIVE: the combined Over trend and raw goal line are both elevated without an active scoring drought, or the H2H variance is extreme. An unlisted high-scoring outlier should be investigated."
-            : "INACTIVE: an unlisted high-scoring outlier is not currently triggered. Recheck it when the combined Over trend exceeds 110%, raw goal line reaches 3.50+, and neither team is in a scoring drought."}
+            ? "The elevated goal environment and wide-gap/H2H evidence justify investigating an unlisted high-scoring outlier."
+            : "No unlisted high-scoring outlier is justified by the current evidence."}
         </p>
       </div>
     </div>
