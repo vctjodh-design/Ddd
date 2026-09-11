@@ -163,7 +163,7 @@ const CONVERGENCE_POOL: Score[] = [
   { home: 0, away: 0 }, { home: 1, away: 0 }, { home: 2, away: 0 },
   { home: 3, away: 0 }, { home: 0, away: 3 }, { home: 3, away: 1 },
   { home: 1, away: 3 }, { home: 3, away: 2 }, { home: 2, away: 3 },
-  { home: 3, away: 3 }, { home: 4, away: 0 }, { home: 0, away: 4 },
+  { home: 2, away: 2 }, { home: 3, away: 3 }, { home: 4, away: 0 }, { home: 0, away: 4 },
   { home: 4, away: 1 }, { home: 1, away: 4 },
 ];
 const H2H_DISPLAY_LIMIT = 6;
