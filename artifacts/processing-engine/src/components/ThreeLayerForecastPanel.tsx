@@ -30,6 +30,7 @@ interface Forecast {
   available: true;
   homeLossPct: number;
   awayWinPct: number;
+  sureThreshold: number;
   sureVerdict: string;
   homeXg: number;
   awayXg: number;
@@ -40,10 +41,27 @@ interface Forecast {
   awayUnderPct: number;
   combinedOverPct: number;
   combinedUnderPct: number;
+  trendThreshold: number;
   roundingDirection: "up" | "down" | "standard";
   roundedGoalLine: number;
   primary: Score;
   secondary: Score;
+}
+
+interface MatchProfile {
+  sampleSize: number;
+  goalsForAvg: number;
+  goalsAgainstAvg: number;
+  totalGoalsAvg: number;
+  goalsForVariance: number;
+  totalGoalsVariance: number;
+  bttsPct: number;
+  cleanSheetPct: number;
+  scorelessPct: number;
+  recentGoalsForAvg: number;
+  baselineGoalsForAvg: number;
+  momentum: number;
+  averageMargin: number;
 }
 
 interface Unavailable {
@@ -65,6 +83,121 @@ function scoreDistance(score: Score, homeXg: number, awayXg: number): number {
   return Math.abs(score.home - homeXg) + Math.abs(score.away - awayXg);
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function variance(values: number[]): number {
+  if (values.length < 2) return 0;
+  const mean = average(values);
+  return average(values.map(value => (value - mean) ** 2));
+}
+
+function centralAverage(values: number[]): number {
+  if (values.length < 5) return average(values);
+  const ordered = [...values].sort((a, b) => a - b);
+  return average(ordered.slice(1, -1));
+}
+
+function profileFor(matches: ForecastMatch[]): MatchProfile {
+  const ordered = matches
+    .filter(validMatch)
+    .sort((a, b) => (a.date ?? 0) - (b.date ?? 0));
+  const recent = ordered.slice(-3);
+  const goalsFor = ordered.map(goalsForTeam);
+  const goalsAgainst = ordered.map(goalsAgainstTeam);
+  const totals = ordered.map(match => match.homeScore + match.awayScore);
+  const margins = ordered.map(match => Math.abs(match.homeScore - match.awayScore));
+  const baseline = ordered.slice(-12);
+  const baselineGoalsFor = baseline.map(goalsForTeam);
+  const recentGoalsFor = recent.map(goalsForTeam);
+  const btts = ordered.filter(match => match.homeScore > 0 && match.awayScore > 0).length;
+  const cleanSheets = goalsAgainst.filter(goals => goals === 0).length;
+  const scoreless = goalsFor.filter(goals => goals === 0).length;
+  const baselineAvg = average(baselineGoalsFor);
+  const recentAvg = average(recentGoalsFor);
+
+  return {
+    sampleSize: ordered.length,
+    goalsForAvg: centralAverage(goalsFor),
+    goalsAgainstAvg: centralAverage(goalsAgainst),
+    totalGoalsAvg: centralAverage(totals),
+    goalsForVariance: variance(goalsFor),
+    totalGoalsVariance: variance(totals),
+    bttsPct: ordered.length ? (btts / ordered.length) * 100 : 0,
+    cleanSheetPct: ordered.length ? (cleanSheets / ordered.length) * 100 : 0,
+    scorelessPct: ordered.length ? (scoreless / ordered.length) * 100 : 0,
+    recentGoalsForAvg: recentAvg,
+    baselineGoalsForAvg: baselineAvg,
+    momentum: clamp(1 + (recentAvg - baselineAvg) * 0.12, 0.72, 1.28),
+    averageMargin: average(margins),
+  };
+}
+
+function adaptiveCandidatePool(
+  homeXg: number,
+  awayXg: number,
+  homeProfile: MatchProfile,
+  awayProfile: MatchProfile,
+): Score[] {
+  const totalExpectation = homeXg + awayXg;
+  const volatility = Math.sqrt(
+    Math.max(0, homeProfile.totalGoalsVariance) +
+    Math.max(0, awayProfile.totalGoalsVariance),
+  );
+  const maxTotal = clamp(Math.ceil(totalExpectation + volatility * 0.65), 2, 8);
+  const maxIndividual = clamp(
+    Math.ceil(Math.max(homeXg, awayXg) + Math.sqrt(Math.max(homeProfile.goalsForVariance, awayProfile.goalsForVariance)) * 0.45),
+    2,
+    6,
+  );
+  const candidates: Score[] = [];
+
+  for (let homeGoals = 0; homeGoals <= maxIndividual; homeGoals += 1) {
+    for (let awayGoals = 0; awayGoals <= maxIndividual; awayGoals += 1) {
+      if (homeGoals + awayGoals <= maxTotal) {
+        candidates.push({ home: homeGoals, away: awayGoals });
+      }
+    }
+  }
+
+  return candidates;
+}
+
+function poissonMass(goals: number, mean: number): number {
+  let factorial = 1;
+  for (let index = 2; index <= goals; index += 1) factorial *= index;
+  return Math.exp(-mean) * (mean ** goals) / factorial;
+}
+
+function rankAdaptiveScores(
+  candidates: Score[],
+  homeXg: number,
+  awayXg: number,
+  homeProfile: MatchProfile,
+  awayProfile: MatchProfile,
+): Score[] {
+  const expectedTotal = homeXg + awayXg;
+  const bttsRate = (homeProfile.bttsPct + awayProfile.bttsPct) / 200;
+  const homeCleanSheetRate = homeProfile.cleanSheetPct / 100;
+  const awayCleanSheetRate = awayProfile.cleanSheetPct / 100;
+
+  return [...candidates].sort((a, b) => {
+    const scoreValue = (score: Score) => {
+      const poisson = poissonMass(score.home, Math.max(0.05, homeXg)) *
+        poissonMass(score.away, Math.max(0.05, awayXg));
+      const bttsFit = (score.home > 0 && score.away > 0) ? bttsRate : 1 - bttsRate;
+      const cleanSheetFit =
+        (score.away === 0 ? homeCleanSheetRate : 1 - homeCleanSheetRate) *
+        (score.home === 0 ? awayCleanSheetRate : 1 - awayCleanSheetRate);
+      const totalFit = Math.exp(-Math.abs(score.home + score.away - expectedTotal) * 0.22);
+      return poisson * (0.7 + bttsFit * 0.3) * (0.7 + cleanSheetFit * 0.3) * totalFit;
+    };
+    const difference = scoreValue(b) - scoreValue(a);
+    return difference || scoreDistance(a, homeXg, awayXg) - scoreDistance(b, homeXg, awayXg);
+  });
+}
+
 function calculateForecast(home: ForecastTeamData, away: ForecastTeamData): ForecastResult {
   const homeGames = home.matches.filter(match => match.isHome && validMatch(match));
   const awayGames = away.matches.filter(match => !match.isHome && validMatch(match));
@@ -81,19 +214,26 @@ function calculateForecast(home: ForecastTeamData, away: ForecastTeamData): Fore
   const homeLossPct = (homeLosses / homeGames.length) * 100;
   const awayWinPct = (awayWins / awayGames.length) * 100;
 
-  const awayWinEliminated = homeLossPct < 20 && awayWinPct < 20;
+  const venueSample = Math.min(homeGames.length, awayGames.length);
+  const sureThreshold = clamp(20 - Math.max(0, 8 - venueSample) * 2, 10, 20);
+  const awayWinEliminated = homeLossPct < sureThreshold && awayWinPct < sureThreshold;
   // Mirrored boundary for the opposite outcome: both venue samples show an 80%+ weakness signal.
-  const homeWinEliminated = homeLossPct > 80 && awayWinPct > 80;
+  const homeWinEliminated = homeLossPct > 100 - sureThreshold && awayWinPct > 100 - sureThreshold;
 
-  // Exact Layer 2 formulas, using venue-specific averages.
-  const homeXg = (
-    average(homeGames.map(match => match.homeScore)) +
-    average(awayGames.map(match => match.homeScore))
-  ) / 2;
-  const awayXg = (
-    average(awayGames.map(match => match.awayScore)) +
-    average(homeGames.map(match => match.awayScore))
-  ) / 2;
+  const homeProfile = profileFor(homeGames);
+  const awayProfile = profileFor(awayGames);
+  const homeRecentProfile = profileFor(chronologicalTimeline(home));
+  const awayRecentProfile = profileFor(chronologicalTimeline(away));
+
+  // Blend venue behavior with recent all-venue form. The blend makes the forecast
+  // responsive to the matchup without allowing one venue sample or one outlier to
+  // become the whole prediction.
+  const homeAttack = (homeProfile.goalsForAvg * 0.65 + homeRecentProfile.goalsForAvg * 0.35) * homeRecentProfile.momentum;
+  const awayDefense = awayProfile.goalsAgainstAvg * 0.65 + awayRecentProfile.goalsAgainstAvg * 0.35;
+  const awayAttack = (awayProfile.goalsForAvg * 0.65 + awayRecentProfile.goalsForAvg * 0.35) * awayRecentProfile.momentum;
+  const homeDefense = homeProfile.goalsAgainstAvg * 0.65 + homeRecentProfile.goalsAgainstAvg * 0.35;
+  const homeXg = Math.max(0.05, (homeAttack + awayDefense) / 2);
+  const awayXg = Math.max(0.05, (awayAttack + homeDefense) / 2);
   const rawGoalLine = homeXg + awayXg;
 
   const homeOverPct = (homeGames.filter(match => match.homeScore + match.awayScore > 2.5).length / homeGames.length) * 100;
@@ -103,8 +243,9 @@ function calculateForecast(home: ForecastTeamData, away: ForecastTeamData): Fore
   const combinedOverPct = homeOverPct + awayOverPct;
   const combinedUnderPct = homeUnderPct + awayUnderPct;
 
+  const trendThreshold = Math.max(95, 100 + (4 - Math.min(homeGames.length, awayGames.length)) * 2);
   const roundingDirection: Forecast["roundingDirection"] =
-    combinedUnderPct > 110 ? "down" : combinedOverPct > 110 ? "up" : "standard";
+    combinedUnderPct > trendThreshold ? "down" : combinedOverPct > trendThreshold ? "up" : "standard";
   const roundedGoalLine = roundingDirection === "down"
     ? Math.max(0, Math.floor(rawGoalLine))
     : roundingDirection === "up"
@@ -117,23 +258,29 @@ function calculateForecast(home: ForecastTeamData, away: ForecastTeamData): Fore
       ? "Home win eliminated"
       : "No outcome eliminated";
 
-  const candidateScores: Score[] = [];
-  for (let homeGoals = 0; homeGoals <= roundedGoalLine; homeGoals += 1) {
-    const awayGoals = roundedGoalLine - homeGoals;
-    if (awayWinEliminated && awayGoals > homeGoals) continue;
-    if (homeWinEliminated && homeGoals > awayGoals) continue;
-    candidateScores.push({ home: homeGoals, away: awayGoals });
-  }
-
-  const allowedScores = candidateScores.length
-    ? candidateScores
-    : [{ home: Math.floor(roundedGoalLine / 2), away: Math.ceil(roundedGoalLine / 2) }];
-  allowedScores.sort((a, b) => scoreDistance(a, homeXg, awayXg) - scoreDistance(b, homeXg, awayXg));
+  const adaptiveScores = adaptiveCandidatePool(
+    homeXg,
+    awayXg,
+    homeProfile,
+    awayProfile,
+  );
+  const allowedScores = adaptiveScores.filter(score =>
+    !(awayWinEliminated && score.away > score.home) &&
+    !(homeWinEliminated && score.home > score.away),
+  );
+  const rankedScores = rankAdaptiveScores(
+    allowedScores.length ? allowedScores : adaptiveScores,
+    homeXg,
+    awayXg,
+    homeRecentProfile,
+    awayRecentProfile,
+  );
 
   return {
     available: true,
     homeLossPct,
     awayWinPct,
+    sureThreshold,
     sureVerdict,
     homeXg,
     awayXg,
@@ -144,14 +291,11 @@ function calculateForecast(home: ForecastTeamData, away: ForecastTeamData): Fore
     awayUnderPct,
     combinedOverPct,
     combinedUnderPct,
+    trendThreshold,
     roundingDirection,
     roundedGoalLine,
-    primary: allowedScores[0],
-    secondary: allowedScores[1] ?? (
-      allowedScores[0].home >= allowedScores[0].away
-        ? { home: Math.max(0, allowedScores[0].home - 1), away: allowedScores[0].away + 1 }
-        : { home: allowedScores[0].home + 1, away: Math.max(0, allowedScores[0].away - 1) }
-    ),
+    primary: rankedScores[0],
+    secondary: rankedScores[1] ?? rankedScores[0],
   };
 }
 
@@ -159,13 +303,6 @@ function scoreLabel(score: Score): string {
   return `${score.home}–${score.away}`;
 }
 
-const CONVERGENCE_POOL: Score[] = [
-  { home: 0, away: 0 }, { home: 1, away: 0 }, { home: 2, away: 0 },
-  { home: 3, away: 0 }, { home: 0, away: 3 }, { home: 3, away: 1 },
-  { home: 1, away: 3 }, { home: 3, away: 2 }, { home: 2, away: 3 },
-  { home: 2, away: 2 }, { home: 3, away: 3 }, { home: 4, away: 0 }, { home: 0, away: 4 },
-  { home: 4, away: 1 }, { home: 1, away: 4 },
-];
 const H2H_DISPLAY_LIMIT = 6;
 
 function normalizeTeamName(name: string): string {
@@ -268,6 +405,12 @@ interface ConvergenceAnalysis {
   homeTimeline: ForecastMatch[];
   awayTimeline: ForecastMatch[];
   h2h: ForecastMatch[];
+  candidatePool: Score[];
+  adaptiveMaxTotal: number;
+  adaptiveVolatility: number;
+  fatigueCeiling: number;
+  lowVarianceCeiling: number;
+  wideGapFloor: number;
   homeGrinderCount: number;
   homeWideGapCount: number;
   awayWideGapCount: number;
@@ -308,6 +451,22 @@ function analyzeConvergence(
   const homeGrinderCount = lowVarianceGrinderCount(homeVenueMatches);
   const homeWideGapCount = wideGapCount(homeVenueMatches);
   const awayWideGapCount = wideGapCount(awayVenueMatches);
+  const homeProfile = profileFor(homeVenueMatches);
+  const awayProfile = profileFor(awayVenueMatches);
+  const adaptiveVolatility = Math.sqrt(
+    Math.max(0, homeProfile.totalGoalsVariance) +
+    Math.max(0, awayProfile.totalGoalsVariance),
+  );
+  const candidatePool = adaptiveCandidatePool(
+    forecast.homeXg,
+    forecast.awayXg,
+    homeProfile,
+    awayProfile,
+  );
+  const adaptiveMaxTotal = candidatePool.reduce(
+    (max, score) => Math.max(max, score.home + score.away),
+    0,
+  );
   const lowVarianceFreeze = homeVenueMatches.length >= 4 && homeGrinderCount >= 2;
   const wideGapEnvironment =
     homeVenueMatches.length >= 4 &&
@@ -317,15 +476,27 @@ function analyzeConvergence(
   const homeBlowoutStreak = consecutiveHighScoringMatches(homeTimeline);
   const awayBlowoutStreak = consecutiveHighScoringMatches(awayTimeline);
   const fatigueTax = homeBlowoutStreak >= 2 || awayBlowoutStreak >= 2;
+  const fatigueCeiling = Math.max(
+    1,
+    Math.ceil(forecast.rawGoalLine - Math.min(2, Math.max(homeBlowoutStreak, awayBlowoutStreak) * 0.5)),
+  );
 
-  let survivors = CONVERGENCE_POOL.map(score => ({ ...score }));
+  const lowVarianceCeiling = Math.max(
+    1,
+    Math.ceil(forecast.rawGoalLine + adaptiveVolatility * 0.2),
+  );
+  const wideGapFloor = Math.max(
+    1,
+    Math.floor(forecast.rawGoalLine - adaptiveVolatility * 0.35),
+  );
+  let survivors = candidatePool.map(score => ({ ...score }));
   const layerOneBefore = survivors;
-  if (lowVarianceFreeze) survivors = survivors.filter(score => score.home + score.away < 4);
-  if (wideGapEnvironment) survivors = survivors.filter(score => score.home + score.away >= 3);
+  if (lowVarianceFreeze) survivors = survivors.filter(score => score.home + score.away <= lowVarianceCeiling);
+  if (wideGapEnvironment) survivors = survivors.filter(score => score.home + score.away >= wideGapFloor);
   const layerOneRemoved = layerOneBefore.filter(score => !survivors.some(candidate => candidate.home === score.home && candidate.away === score.away));
 
   const layerTwoBefore = survivors;
-  if (fatigueTax) survivors = survivors.filter(score => score.home + score.away <= 2);
+  if (fatigueTax) survivors = survivors.filter(score => score.home + score.away <= fatigueCeiling);
   if (homeDrought) survivors = survivors.filter(score => score.home > 0);
   if (awayDrought) survivors = survivors.filter(score => score.away > 0);
   const layerTwoRemoved = layerTwoBefore.filter(score => !survivors.some(candidate => candidate.home === score.home && candidate.away === score.away));
@@ -354,13 +525,20 @@ function analyzeConvergence(
   if (closeH2H) survivors = survivors.filter(score => Math.abs(score.home - score.away) <= 1);
   if (wildH2H) survivors = survivors.filter(score => score.home + score.away > 2);
   const layerThreeRemoved = layerThreeBefore.filter(score => !survivors.some(candidate => candidate.home === score.home && candidate.away === score.away));
+  survivors = rankAdaptiveScores(
+    survivors.length ? survivors : candidatePool,
+    forecast.homeXg,
+    forecast.awayXg,
+    homeProfile,
+    awayProfile,
+  );
 
   const breakTrigger = lowVarianceFreeze
-    ? `Home venue produced ${homeGrinderCount} low-variance grinder(s), forcing the pool below four total goals.`
+    ? `Home venue produced ${homeGrinderCount} low-variance grinder(s), so the adaptive ceiling is ${lowVarianceCeiling} total goals.`
     : wideGapEnvironment
-      ? `Both venue samples contain repeated wide-gap matches (${homeWideGapCount} home / ${awayWideGapCount} away), removing the lowest totals.`
+      ? `Both venue samples contain repeated wide-gap matches (${homeWideGapCount} home / ${awayWideGapCount} away), so totals below ${wideGapFloor} were removed.`
       : fatigueTax
-        ? `A ${Math.max(homeBlowoutStreak, awayBlowoutStreak)}-match high-scoring run triggered the regression-to-mean fatigue tax.`
+        ? `A ${Math.max(homeBlowoutStreak, awayBlowoutStreak)}-match high-scoring run set an adaptive ceiling of ${fatigueCeiling} total goals.`
         : homeDrought || awayDrought
           ? "A consecutive scoreless run triggered the anomaly-spike clean-sheet check."
           : closeH2H
@@ -370,7 +548,7 @@ function analyzeConvergence(
               : "No single log statistic is strong enough to force a break from the current form trend.";
 
   const outlierTrigger = (
-    forecast.combinedOverPct > 110 &&
+    forecast.combinedOverPct > forecast.trendThreshold &&
     forecast.rawGoalLine >= 3.5 &&
     !fatigueTax &&
     !lowVarianceFreeze &&
@@ -381,6 +559,12 @@ function analyzeConvergence(
     homeTimeline,
     awayTimeline,
     h2h,
+    candidatePool,
+    adaptiveMaxTotal,
+    adaptiveVolatility,
+    fatigueCeiling,
+    lowVarianceCeiling,
+    wideGapFloor,
     homeGrinderCount,
     homeWideGapCount,
     awayWideGapCount,
@@ -459,13 +643,13 @@ function ConvergenceSieveSection({ home, away, fixture, forecast }: {
           <span className="text-xs font-mono uppercase tracking-widest text-purple-200">The 13th Convergence: The Systemic Scoreline Sieve</span>
         </div>
         <p className="mt-2 text-[11px] leading-relaxed font-mono text-muted-foreground/70">
-          This matrix maps {fixture.homeTeam.name} and {fixture.awayTeam.name} across their latest 12 chronological matches and filters the universal scoreline pool through adaptive tactical style, trend exhaustion, and H2H margin reality.
+           This matrix maps {fixture.homeTeam.name} and {fixture.awayTeam.name} across their latest 12 chronological matches, builds a match-specific score-state distribution, and then applies only the tactical, trend, and H2H filters supported by the loaded data.
         </p>
       </div>
 
       <div className="border border-purple-500/20 bg-background/20 p-3">
-         <div className="text-[10px] font-mono uppercase tracking-widest text-purple-200/70 mb-2">Universal Candidate Pool · {CONVERGENCE_POOL.length} default scorelines</div>
-        <CandidateChips scores={CONVERGENCE_POOL} muted />
+          <div className="text-[10px] font-mono uppercase tracking-widest text-purple-200/70 mb-2">Adaptive Candidate States · {analysis.candidatePool.length} match-specific scorelines</div>
+         <CandidateChips scores={analysis.candidatePool} muted />
       </div>
 
       <div>
@@ -500,9 +684,9 @@ function ConvergenceSieveSection({ home, away, fixture, forecast }: {
             <div className="text-[10px] font-mono font-bold text-cyan-200">Layer 1 · Tactical Environment</div>
             <p className="text-[10px] leading-relaxed font-mono text-muted-foreground/60">
               {analysis.lowVarianceFreeze
-                ? `${fixture.homeTeam.name} recorded ${analysis.homeGrinderCount} low-variance home grinder(s), so totals of four or more were frozen out.`
+                 ? `${fixture.homeTeam.name} recorded ${analysis.homeGrinderCount} low-variance home grinder(s), so the adaptive total ceiling is ${analysis.lowVarianceCeiling} goals.`
                 : analysis.wideGapEnvironment
-                  ? `Both venue samples show repeated wide gaps (${analysis.homeWideGapCount} home / ${analysis.awayWideGapCount} away), so totals below three were removed.`
+                  ? `Both venue samples show repeated wide gaps (${analysis.homeWideGapCount} home / ${analysis.awayWideGapCount} away), so totals below ${analysis.wideGapFloor} were removed.`
                   : "Venue data did not meet either the low-variance freeze or wide-gap threshold."}
             </p>
             <div className="text-[9px] font-mono text-muted-foreground/40">{analysis.layerOneRemoved.length} candidates removed</div>
@@ -511,7 +695,7 @@ function ConvergenceSieveSection({ home, away, fixture, forecast }: {
             <div className="text-[10px] font-mono font-bold text-cyan-200">Layer 2 · Trend Exhaustion</div>
             <p className="text-[10px] leading-relaxed font-mono text-muted-foreground/60">
               {analysis.fatigueTax || analysis.homeDrought || analysis.awayDrought
-                ? `${analysis.fatigueTax ? "A recent blowout streak capped the pool at two total goals. " : ""}${analysis.homeDrought ? `${fixture.homeTeam.name} has a ${analysis.homeDrought}-match scoring drought. ` : ""}${analysis.awayDrought ? `${fixture.awayTeam.name} has a ${analysis.awayDrought}-match scoring drought. ` : ""}${analysis.homeDrought || analysis.awayDrought ? "Clean-sheet options for the dry side were removed." : ""}`
+                 ? `${analysis.fatigueTax ? `A recent blowout streak capped this match-specific pool at ${analysis.fatigueCeiling} total goals. ` : ""}${analysis.homeDrought ? `${fixture.homeTeam.name} has a ${analysis.homeDrought}-match scoring drought. ` : ""}${analysis.awayDrought ? `${fixture.awayTeam.name} has a ${analysis.awayDrought}-match scoring drought. ` : ""}${analysis.homeDrought || analysis.awayDrought ? "Clean-sheet options for the dry side were removed." : ""}`
                 : "No blowout fatigue or consecutive scoreless streak was detected, so this layer stays neutral."}
             </p>
             <div className="text-[9px] font-mono text-muted-foreground/40">{analysis.layerTwoRemoved.length} candidates removed</div>
@@ -537,7 +721,7 @@ function ConvergenceSieveSection({ home, away, fixture, forecast }: {
         <CandidateChips scores={analysis.survivors} />
         <p className="mt-3 text-[10px] leading-relaxed font-mono text-muted-foreground/70">
           {analysis.survivors.length
-            ? `The surviving field contains ${analysis.survivors.length} of ${CONVERGENCE_POOL.length} candidate scorelines. The matrix can contract toward a defensive freeze or expand toward a wide-margin branch; it does not force either direction without supporting logs.`
+             ? `The surviving field contains ${analysis.survivors.length} of ${analysis.candidatePool.length} match-specific score states. The matrix ranks central expectation separately from capacity and volatility; it does not treat a high-scoring outlier as the default.`
             : "All listed candidates were eliminated by the active filters; this is the point at which the system should inspect an unlisted outlier rather than force a pool result."}
         </p>
       </div>
@@ -594,7 +778,7 @@ export default function ThreeLayerForecastPanel({ home, away, fixture }: {
     ? "Under trend wins the rounding rule"
     : result.roundingDirection === "up"
       ? "Over trend wins the rounding rule"
-      : "Neither trend crosses the 110% threshold";
+      : `Neither trend crosses the adaptive ${result.trendThreshold.toFixed(0)}% threshold`;
 
   return (
     <motion.div key="forecast" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -634,6 +818,8 @@ export default function ThreeLayerForecastPanel({ home, away, fixture }: {
                   Home losses: <span className="text-foreground">{result.homeLossPct.toFixed(1)}%</span>
                   <br />
                   Away wins: <span className="text-foreground">{result.awayWinPct.toFixed(1)}%</span>
+                  <br />
+                  Adaptive boundary: <span className="text-foreground">{result.sureThreshold.toFixed(0)}%</span>
                 </td>
                 <td className={`px-3 py-3 font-bold ${result.sureVerdict === "No outcome eliminated" ? "text-muted-foreground/70" : "text-cyan-300"}`}>
                   {result.sureVerdict}
