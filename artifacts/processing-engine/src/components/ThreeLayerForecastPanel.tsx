@@ -6,6 +6,10 @@ interface ForecastMatch {
   isHome: boolean;
   homeScore: number;
   awayScore: number;
+  date?: number;
+  eventId?: number;
+  homeTeamName?: string;
+  awayTeamName?: string;
 }
 
 interface ForecastTeamData {
@@ -153,6 +157,292 @@ function calculateForecast(home: ForecastTeamData, away: ForecastTeamData): Fore
 
 function scoreLabel(score: Score): string {
   return `${score.home}–${score.away}`;
+}
+
+const CONVERGENCE_POOL: Score[] = [
+  { home: 0, away: 0 }, { home: 1, away: 0 }, { home: 2, away: 0 },
+  { home: 3, away: 0 }, { home: 0, away: 3 }, { home: 3, away: 1 },
+  { home: 1, away: 3 }, { home: 3, away: 2 }, { home: 2, away: 3 },
+  { home: 3, away: 3 }, { home: 4, away: 0 }, { home: 0, away: 4 },
+  { home: 4, away: 1 }, { home: 1, away: 4 },
+];
+
+function normalizeTeamName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function chronologicalTimeline(team: ForecastTeamData): ForecastMatch[] {
+  return team.matches
+    .filter(validMatch)
+    .sort((a, b) => (a.date ?? 0) - (b.date ?? 0))
+    .slice(-12);
+}
+
+function goalsForTeam(match: ForecastMatch): number {
+  return match.isHome ? match.homeScore : match.awayScore;
+}
+
+function timelineLabel(match: ForecastMatch): string {
+  const venue = match.isHome ? "H" : "A";
+  return `${venue} ${match.homeScore}–${match.awayScore}`;
+}
+
+function currentScoringDrought(timeline: ForecastMatch[]): number {
+  let streak = 0;
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    if (goalsForTeam(timeline[index]) === 0) streak += 1;
+    else break;
+  }
+  return streak >= 2 ? streak : 0;
+}
+
+function matchesSamePair(match: ForecastMatch, homeName: string, awayName: string): boolean {
+  if (!match.homeTeamName || !match.awayTeamName) return false;
+  const home = normalizeTeamName(homeName);
+  const away = normalizeTeamName(awayName);
+  return (
+    (normalizeTeamName(match.homeTeamName) === home && normalizeTeamName(match.awayTeamName) === away) ||
+    (normalizeTeamName(match.homeTeamName) === away && normalizeTeamName(match.awayTeamName) === home)
+  );
+}
+
+interface ConvergenceAnalysis {
+  homeTimeline: ForecastMatch[];
+  awayTimeline: ForecastMatch[];
+  h2h: ForecastMatch[];
+  homeDrought: number;
+  awayDrought: number;
+  survivors: Score[];
+  layerOneRemoved: Score[];
+  layerTwoRemoved: Score[];
+  layerThreeRemoved: Score[];
+  h2hTrigger: boolean;
+  h2hAverageGoals: number;
+  historicalEdge: "home" | "away" | "balanced" | "unavailable";
+  outlierTrigger: boolean;
+}
+
+function analyzeConvergence(
+  home: ForecastTeamData,
+  away: ForecastTeamData,
+  fixture: ForecastFixture,
+  forecast: Forecast,
+): ConvergenceAnalysis {
+  const homeTimeline = chronologicalTimeline(home);
+  const awayTimeline = chronologicalTimeline(away);
+  const h2h = homeTimeline.filter(match => matchesSamePair(match, fixture.homeTeam.name, fixture.awayTeam.name));
+  const homeDrought = currentScoringDrought(homeTimeline);
+  const awayDrought = currentScoringDrought(awayTimeline);
+
+  let survivors = CONVERGENCE_POOL.map(score => ({ ...score }));
+  const layerOneBefore = survivors;
+  if (forecast.sureVerdict === "Away win eliminated") {
+    survivors = survivors.filter(score => score.home >= score.away);
+  } else if (forecast.sureVerdict === "Home win eliminated") {
+    survivors = survivors.filter(score => score.away >= score.home);
+  }
+  const layerOneRemoved = layerOneBefore.filter(score => !survivors.some(candidate => candidate.home === score.home && candidate.away === score.away));
+
+  const layerTwoBefore = survivors;
+  if (homeDrought) survivors = survivors.filter(score => score.home > 0);
+  if (awayDrought) survivors = survivors.filter(score => score.away > 0);
+  const layerTwoRemoved = layerTwoBefore.filter(score => !survivors.some(candidate => candidate.home === score.home && candidate.away === score.away));
+
+  const h2hAverageGoals = h2h.length
+    ? average(h2h.map(match => match.homeScore + match.awayScore))
+    : 0;
+  const recentH2h = h2h.slice(-2);
+  const heavyHistoricalVariance = h2h.length >= 3 && (
+    h2hAverageGoals >= 3 || Math.max(...h2h.map(match => match.homeScore + match.awayScore)) >= 4
+  );
+  const recentLowPlateau = recentH2h.length >= 2 && recentH2h.every(match => match.homeScore + match.awayScore <= 2);
+  const h2hTrigger = heavyHistoricalVariance && recentLowPlateau;
+  const homeH2hWins = h2h.filter(match => (match.isHome ? match.homeScore : match.awayScore) > (match.isHome ? match.awayScore : match.homeScore)).length;
+  const awayH2hWins = h2h.length - homeH2hWins - h2h.filter(match => match.homeScore === match.awayScore).length;
+  const historicalEdge: ConvergenceAnalysis["historicalEdge"] = !h2h.length
+    ? "unavailable"
+    : homeH2hWins > awayH2hWins ? "home"
+      : awayH2hWins > homeH2hWins ? "away"
+        : "balanced";
+
+  const layerThreeBefore = survivors;
+  if (h2hTrigger) {
+    survivors = survivors.filter(score => {
+      if (historicalEdge === "home") return score.home - score.away >= 2;
+      if (historicalEdge === "away") return score.away - score.home >= 2;
+      return score.home !== score.away;
+    });
+  }
+  const layerThreeRemoved = layerThreeBefore.filter(score => !survivors.some(candidate => candidate.home === score.home && candidate.away === score.away));
+
+  const outlierTrigger = (
+    forecast.combinedOverPct > 110 &&
+    forecast.rawGoalLine >= 3.5 &&
+    !homeDrought &&
+    !awayDrought
+  ) || (h2hTrigger && h2hAverageGoals >= 3.5);
+
+  return {
+    homeTimeline,
+    awayTimeline,
+    h2h,
+    homeDrought,
+    awayDrought,
+    survivors,
+    layerOneRemoved,
+    layerTwoRemoved,
+    layerThreeRemoved,
+    h2hTrigger,
+    h2hAverageGoals,
+    historicalEdge,
+    outlierTrigger,
+  };
+}
+
+function CandidateChips({ scores, muted = false }: { scores: Score[]; muted?: boolean }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {scores.map(score => (
+        <span key={`${score.home}-${score.away}`} className={`px-2 py-1 border text-[10px] font-mono ${
+          muted
+            ? "border-border/30 text-muted-foreground/40"
+            : "border-cyan-500/30 bg-cyan-500/5 text-cyan-200"
+        }`}>
+          {scoreLabel(score)}
+        </span>
+      ))}
+      {!scores.length && <span className="text-[10px] font-mono text-muted-foreground/40">None survive</span>}
+    </div>
+  );
+}
+
+function TimelineLog({ title, timeline, color }: { title: string; timeline: ForecastMatch[]; color: string }) {
+  return (
+    <div className="border border-border/20 bg-card/20 p-3">
+      <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color }}>
+        {title} · {timeline.length} matches
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1">
+        {timeline.map((match, index) => (
+          <span key={`${match.eventId ?? index}-${match.date ?? index}`} className="border border-border/15 px-2 py-1 text-[10px] font-mono text-muted-foreground/70">
+            {String(index + 1).padStart(2, "0")} · {timelineLabel(match)}
+          </span>
+        ))}
+      </div>
+      {!timeline.length && <p className="text-[10px] font-mono text-muted-foreground/40">No completed timeline available.</p>}
+    </div>
+  );
+}
+
+function ConvergenceSieveSection({ home, away, fixture, forecast }: {
+  home: ForecastTeamData;
+  away: ForecastTeamData;
+  fixture: ForecastFixture;
+  forecast: Forecast;
+}) {
+  const analysis = analyzeConvergence(home, away, fixture, forecast);
+  const homeColor = fixture.homeTeam.colorPrimary ?? "#22d3ee";
+  const awayColor = fixture.awayTeam.colorPrimary ?? "#f97316";
+
+  return (
+    <div className="border border-purple-500/30 bg-purple-500/5 p-4 sm:p-5 space-y-5">
+      <div>
+        <div className="flex items-center gap-2">
+          <span className="text-lg">⚽</span>
+          <span className="text-xs font-mono uppercase tracking-widest text-purple-200">The 13th Convergence: The Systemic Scoreline Sieve</span>
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed font-mono text-muted-foreground/70">
+          This matrix maps {fixture.homeTeam.name} and {fixture.awayTeam.name} across their available chronological timelines and filters the standard scoreline pool through venue polarization, scoring droughts, and H2H equilibrium reversion.
+        </p>
+      </div>
+
+      <div className="border border-purple-500/20 bg-background/20 p-3">
+        <div className="text-[10px] font-mono uppercase tracking-widest text-purple-200/70 mb-2">Candidate Pool</div>
+        <CandidateChips scores={CONVERGENCE_POOL} muted />
+      </div>
+
+      <div>
+        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">📊 The Triple-Data Logs · Oldest to Most Recent</div>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <TimelineLog title={`${fixture.homeTeam.name} · Home Vector`} timeline={analysis.homeTimeline} color={homeColor} />
+          <TimelineLog title={`${fixture.awayTeam.name} · Inconsistency Matrix`} timeline={analysis.awayTimeline} color={awayColor} />
+        </div>
+      </div>
+
+      <div className="border border-border/20 bg-card/20 p-3">
+        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">Head-to-Head Historical Friction</div>
+        {analysis.h2h.length ? (
+          <div className="flex flex-wrap gap-1.5">
+            {analysis.h2h.map((match, index) => (
+              <span key={`${match.eventId ?? index}-${match.date ?? index}`} className="border border-purple-500/25 px-2 py-1 text-[10px] font-mono text-purple-200/80">
+                {index + 1}. {match.homeScore}–{match.awayScore}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[10px] font-mono text-amber-200/60">
+            No H2H meetings were present in the loaded 12-match timelines. Layer 3 applies no H2H elimination rather than inventing historical results.
+          </p>
+        )}
+      </div>
+
+      <div>
+        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">⚙️ The Stratified Sifting Layers</div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          <div className="border border-border/20 bg-card/20 p-3 space-y-2">
+            <div className="text-[10px] font-mono font-bold text-cyan-200">Layer 1 · Venue Polarization</div>
+            <p className="text-[10px] leading-relaxed font-mono text-muted-foreground/60">
+              {forecast.sureVerdict === "Away win eliminated"
+                ? "Home venue stability eliminated away-skewed results from the candidate field."
+                : forecast.sureVerdict === "Home win eliminated"
+                  ? "The mirrored weakness boundary eliminated home-skewed results from the candidate field."
+                  : "Neither venue boundary eliminated a result direction."}
+            </p>
+            <div className="text-[9px] font-mono text-muted-foreground/40">{analysis.layerOneRemoved.length} candidates removed</div>
+          </div>
+          <div className="border border-border/20 bg-card/20 p-3 space-y-2">
+            <div className="text-[10px] font-mono font-bold text-cyan-200">Layer 2 · Inconsistency Drought</div>
+            <p className="text-[10px] leading-relaxed font-mono text-muted-foreground/60">
+              {analysis.homeDrought || analysis.awayDrought
+                ? `${analysis.homeDrought ? `${fixture.homeTeam.name} has a ${analysis.homeDrought}-match scoring drought` : ""}${analysis.homeDrought && analysis.awayDrought ? " and " : ""}${analysis.awayDrought ? `${fixture.awayTeam.name} has a ${analysis.awayDrought}-match scoring drought` : ""}. Clean-sheet options for the dry side were removed.`
+                : "No current two-match scoring drought was detected, so this layer removes no clean-sheet options."}
+            </p>
+            <div className="text-[9px] font-mono text-muted-foreground/40">{analysis.layerTwoRemoved.length} candidates removed</div>
+          </div>
+          <div className="border border-border/20 bg-card/20 p-3 space-y-2">
+            <div className="text-[10px] font-mono font-bold text-cyan-200">Layer 3 · H2H Reversion</div>
+            <p className="text-[10px] leading-relaxed font-mono text-muted-foreground/60">
+              {analysis.h2hTrigger
+                ? `Historical average is ${analysis.h2hAverageGoals.toFixed(1)} goals with a recent low-scoring plateau. ${analysis.historicalEdge === "balanced" ? "Balanced draws were removed." : `The ${analysis.historicalEdge} historical vector must win by at least two goals.`}`
+                : analysis.h2h.length
+                  ? "The available H2H sequence did not meet the heavy-variance plus low-plateau trigger."
+                  : "No H2H friction matrix was available, so no equilibrium-reversion filter was applied."}
+            </p>
+            <div className="text-[9px] font-mono text-muted-foreground/40">{analysis.layerThreeRemoved.length} candidates removed</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="border border-green-500/30 bg-green-500/5 p-3">
+        <div className="text-[10px] font-mono uppercase tracking-widest text-green-300/80 mb-2">Survivors after all three filters</div>
+        <CandidateChips scores={analysis.survivors} />
+        <p className="mt-3 text-[10px] leading-relaxed font-mono text-muted-foreground/70">
+          {analysis.survivors.length
+            ? `The surviving field contains ${analysis.survivors.length} of ${CONVERGENCE_POOL.length} candidate scorelines. Football inconsistency${analysis.homeDrought || analysis.awayDrought ? " is collapsing low-scoring clean-sheet options because a scoring drought is active." : " does not currently trigger a drought-based collapse of low-scoring options."}`
+            : "All listed candidates were eliminated by the active filters; this is the point at which the system should inspect an unlisted outlier rather than force a pool result."}
+        </p>
+      </div>
+
+      <div className="border border-amber-500/25 bg-amber-500/5 p-3">
+        <div className="text-[10px] font-mono uppercase tracking-widest text-amber-200/80 mb-2">Ultimate question · outlier trigger</div>
+        <p className="text-[10px] leading-relaxed font-mono text-muted-foreground/70">
+          {analysis.outlierTrigger
+            ? "ACTIVE: the combined Over trend and raw goal line are both elevated without an active scoring drought, or the H2H variance is extreme. An unlisted high-scoring outlier should be investigated."
+            : "INACTIVE: an unlisted high-scoring outlier is not currently triggered. Recheck it when the combined Over trend exceeds 110%, raw goal line reaches 3.50+, and neither team is in a scoring drought."}
+        </p>
+      </div>
+    </div>
+  );
 }
 
 export default function ThreeLayerForecastPanel({ home, away, fixture }: {
@@ -304,6 +594,8 @@ export default function ThreeLayerForecastPanel({ home, away, fixture }: {
           <p className="text-[10px] font-mono text-muted-foreground/60">{trendLabel}. Rounded line: {result.roundedGoalLine} goals.</p>
         </div>
       </div>
+
+      <ConvergenceSieveSection home={home} away={away} fixture={fixture} forecast={result} />
     </motion.div>
   );
 }
