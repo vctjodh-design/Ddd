@@ -1,5 +1,7 @@
 import { Router } from "express";
 import {
+  fetchBetExplorerMatches,
+  findBestBEMatch,
   fetchMatchPageData,
   fetchBETeamStats,
   fetchMatchMarkets,
@@ -7,6 +9,39 @@ import {
 } from "../lib/betExplorer.js";
 
 const router = Router();
+
+router.get("/fixture/h2h", async (req, res) => {
+  const {
+    homeTeam = "",
+    awayTeam = "",
+    date = new Date().toISOString().slice(0, 10),
+  } = req.query as Record<string, string>;
+
+  if (!homeTeam || !awayTeam) {
+    res.status(400).json({ error: "homeTeam and awayTeam are required" });
+    return;
+  }
+
+  try {
+    const matches = await fetchBetExplorerMatches(date);
+    const beMatch = findBestBEMatch(homeTeam, awayTeam, matches);
+    if (!beMatch) {
+      res.json({ h2h: [], source: "betexplorer", matched: false });
+      return;
+    }
+
+    const page = await fetchMatchPageData(beMatch.matchUrl);
+    res.json({
+      h2h: page?.h2h ?? [],
+      source: "betexplorer",
+      matched: true,
+      matchUrl: beMatch.matchUrl,
+    });
+  } catch (err) {
+    req.log.error({ err }, "Failed to fetch BetExplorer H2H");
+    res.status(502).json({ error: "Failed to fetch BetExplorer H2H" });
+  }
+});
 
 interface MatchRow {
   eventId: number;
@@ -173,6 +208,7 @@ router.get("/fixture/be/:matchId", async (req, res) => {
         statHistory: awayStatHistory,
         beStats: awayStats ?? null,
       },
+      h2h: matchPageData?.h2h ?? [],
       markets,
     });
   } catch (err) {

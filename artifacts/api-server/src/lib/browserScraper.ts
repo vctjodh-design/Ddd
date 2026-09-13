@@ -22,6 +22,17 @@ export interface DomLink {
   date: string;
 }
 
+export interface BetExplorerH2HRow {
+  matchId: string;
+  matchUrl: string;
+  date: number;
+  homeTeam: string;
+  awayTeam: string;
+  homeScore: number;
+  awayScore: number;
+  odds: [number, number, number];
+}
+
 export interface BrowserFetchResult {
   html:        string | null;
   intercepted: InterceptedResponse[];
@@ -302,6 +313,129 @@ export async function browserFetchHashPage(
     ? baseUrl
     : `${baseUrl.split("#")[0]}#/page/${pageNum}/`;
   return browserFetch(hashUrl, interceptHost, timeoutMs);
+}
+
+function parseBetExplorerDate(dataDt: string): number {
+  const [day, month, year, hour = 0, minute = 0] = dataDt.split(",").map(Number);
+  if (![day, month, year, hour, minute].every(Number.isFinite)) return 0;
+  return Math.floor(Date.UTC(year, month - 1, day, hour, minute) / 1000);
+}
+
+/**
+ * Expand BetExplorer's H2H block and return only completed meetings that
+ * contain a complete 1X2 odds triplet. The initial page renders six rows;
+ * clicking "Show more matches" loads the remaining historical rows in place.
+ */
+export async function browserFetchBetExplorerH2H(
+  url: string,
+  log?: (message: string) => void,
+  timeoutMs = 35_000,
+): Promise<BetExplorerH2HRow[]> {
+  let context: BrowserContext | null = null;
+  try {
+    const browser = await getBrowser();
+    context = await browser.newContext({
+      userAgent: USER_AGENT,
+      viewport: { width: 390, height: 844 },
+      locale: "en-GB",
+      timezoneId: "Europe/London",
+      extraHTTPHeaders: EXTRA_HEADERS,
+    });
+    const page = await context.newPage();
+    await applyStealthScript(page);
+    await page.goto(url, { waitUntil: "commit", timeout: timeoutMs }).catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
+
+    if (await waitForCloudflare(page)) {
+      log?.("[BetExplorer] H2H page remained behind Cloudflare");
+      return [];
+    }
+
+    let expansions = 0;
+    for (; expansions < 10; expansions += 1) {
+      const more = page.getByText("Show more matches", { exact: true }).first();
+      if (await more.count() === 0) break;
+      await more.click({ timeout: 4_000 }).catch(() => {});
+      await page.waitForTimeout(900);
+      await page.waitForLoadState("networkidle", { timeout: 4_000 }).catch(() => {});
+    }
+
+    const rawRows = await page.evaluate(() => {
+      // The callback executes in Chromium; the API server tsconfig intentionally
+      // omits DOM libraries, so keep the browser-only values structurally typed.
+      const doc = (globalThis as unknown as {
+        document: {
+          querySelectorAll: (selector: string) => ArrayLike<{
+            querySelector: (selector: string) => {
+              textContent?: string | null;
+              getAttribute: (name: string) => string | null;
+            } | null;
+            querySelectorAll: (selector: string) => ArrayLike<{
+              getAttribute: (name: string) => string | null;
+            }>;
+            getAttribute: (name: string) => string | null;
+          }>;
+        };
+      }).document;
+      return Array.from(doc.querySelectorAll(".head-to-head__row")).map(row => {
+        const participant = row.querySelector("a.table-main__participants");
+        const home = row.querySelector(".participantHomeOrder p")?.textContent?.trim() ?? "";
+        const away = row.querySelector(".table-main__participantAway p")?.textContent?.trim() ?? "";
+        const scoreNode = row.querySelector(".participantAlign .mainResult");
+        const score = (scoreNode?.textContent?.match(/\d+/g) ?? []).map(Number);
+        const odds = Array.from(row.querySelectorAll(".table-main__odds[data-odd]"))
+          .map(cell => Number(cell.getAttribute("data-odd")));
+        const href = participant?.getAttribute("href") ?? "";
+        const parts = href.split("/").filter(Boolean);
+        return {
+          href,
+          matchId: parts.at(-1) ?? "",
+          dataDt: row.getAttribute("data-dt") ?? "",
+          home,
+          away,
+          homeScore: score[0] ?? null,
+          awayScore: score[1] ?? null,
+          odds,
+        };
+      });
+    });
+
+    const seen = new Set<string>();
+    const rows: BetExplorerH2HRow[] = [];
+    for (const row of rawRows) {
+      if (
+        !row.matchId ||
+        !row.home ||
+        !row.away ||
+        !Number.isFinite(row.homeScore) ||
+        !Number.isFinite(row.awayScore) ||
+        row.odds.length < 3 ||
+        row.odds.slice(0, 3).some(odd => !Number.isFinite(odd) || odd < 1.01)
+      ) continue;
+
+      const key = `${row.matchId}|${row.dataDt}|${row.homeScore}-${row.awayScore}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({
+        matchId: row.matchId,
+        matchUrl: new URL(row.href, url).href,
+        date: parseBetExplorerDate(row.dataDt),
+        homeTeam: row.home,
+        awayTeam: row.away,
+        homeScore: row.homeScore as number,
+        awayScore: row.awayScore as number,
+        odds: row.odds.slice(0, 3) as [number, number, number],
+      });
+    }
+
+    log?.(`[BetExplorer] H2H expanded ${expansions} time(s): ${rows.length} completed meetings with complete 1X2 odds`);
+    return rows;
+  } catch (error) {
+    log?.(`[BetExplorer] H2H browser extraction failed: ${String(error)}`);
+    return [];
+  } finally {
+    await context?.close().catch(() => {});
+  }
 }
 
 // ── Odds page fetch (persistent context + DOM manipulation) ──────────────────

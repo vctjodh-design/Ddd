@@ -1512,6 +1512,68 @@ export default function FixtureDetail() {
 
   const home = data?.home as TeamData | undefined;
   const away = data?.away as TeamData | undefined;
+  const [remoteH2H, setRemoteH2H] = React.useState<unknown[]>([]);
+
+  React.useEffect(() => {
+    if (isBE || !fixture?.homeTeam?.name || !fixture?.awayTeam?.name || !fixture.kickoffTimestamp) {
+      setRemoteH2H([]);
+      return;
+    }
+
+    const params = new URLSearchParams({
+      homeTeam: fixture.homeTeam.name,
+      awayTeam: fixture.awayTeam.name,
+      date: new Date(fixture.kickoffTimestamp * 1000).toISOString().slice(0, 10),
+    });
+    let cancelled = false;
+    fetch(`/api/fixture/h2h?${params.toString()}`)
+      .then(response => response.ok ? response.json() : Promise.reject(response.status))
+      .then(result => {
+        if (!cancelled) setRemoteH2H(Array.isArray(result?.h2h) ? result.h2h : []);
+      })
+      .catch(() => {
+        if (!cancelled) setRemoteH2H([]);
+      });
+
+    return () => { cancelled = true; };
+  }, [isBE, fixture?.homeTeam?.name, fixture?.awayTeam?.name, fixture?.kickoffTimestamp]);
+
+  const h2hMatches = Array.isArray(data?.h2h)
+    ? data.h2h.map((match: {
+        date?: number;
+        matchId?: string;
+        homeTeam?: string;
+        awayTeam?: string;
+        homeScore?: number;
+        awayScore?: number;
+        odds?: [number, number, number];
+      }) => ({
+        isHome: true,
+        date: match.date,
+        eventId: undefined,
+        homeTeamName: match.homeTeam,
+        awayTeamName: match.awayTeam,
+        homeScore: match.homeScore ?? 0,
+        awayScore: match.awayScore ?? 0,
+        odds: match.odds,
+      }))
+    : remoteH2H.map((match: {
+        date?: number;
+        homeTeam?: string;
+        awayTeam?: string;
+        homeScore?: number;
+        awayScore?: number;
+        odds?: [number, number, number];
+      }) => ({
+        isHome: true,
+        date: match.date,
+        eventId: undefined,
+        homeTeamName: match.homeTeam,
+        awayTeamName: match.awayTeam,
+        homeScore: match.homeScore ?? 0,
+        awayScore: match.awayScore ?? 0,
+        odds: match.odds,
+      }));
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col dark">
@@ -1639,6 +1701,7 @@ export default function FixtureDetail() {
                 home={home}
                 away={away}
                 fixture={fixture}
+                h2hMatches={h2hMatches}
               />
             ) : activeTab === "odds" && home && away ? (
               <motion.div key="odds" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>

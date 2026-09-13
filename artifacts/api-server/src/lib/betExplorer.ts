@@ -16,6 +16,7 @@
 
 import type { ProcessingLog } from "./db.js";
 import { torFetch, rotateCircuit } from "./torProxy.js";
+import { browserFetchBetExplorerH2H, type BetExplorerH2HRow } from "./browserScraper.js";
 
 /**
  * Minimum number of 1x2 bookmakers considered a "full" response from BetExplorer.
@@ -682,6 +683,7 @@ export async function fetchMatchPageData(
   homeSlug: string; homeId: string;
   awaySlug: string; awayId: string;
   homeScore: number | null; awayScore: number | null;
+  h2h: BetExplorerH2HRow[];
 } | null> {
   log?.(`[BetExplorer] Fetching match page: ${matchUrl}`);
   try {
@@ -732,10 +734,12 @@ export async function fetchMatchPageData(
       }
     }
 
+    const h2h = await browserFetchBetExplorerH2H(matchUrl, log);
+
     return {
       homeSlug: teamLinks[0].slug, homeId: teamLinks[0].id,
       awaySlug: teamLinks[1].slug, awayId: teamLinks[1].id,
-      homeScore, awayScore,
+      homeScore, awayScore, h2h,
     };
   } catch (e) {
     log?.(`[BetExplorer] Match page fetch error: ${e}`);

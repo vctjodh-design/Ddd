@@ -13,8 +13,8 @@ const router: IRouter = Router();
 
 router.use(healthRouter);
 router.use(fixturesRouter);
-router.use(fixtureDetailRouter);
 router.use(fixtureDetailBeRouter);
+router.use(fixtureDetailRouter);
 router.use(bulkRouter);
 router.use(dbViewerRouter);
 router.use(processingRouter);

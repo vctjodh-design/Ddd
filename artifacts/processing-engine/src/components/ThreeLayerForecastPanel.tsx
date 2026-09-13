@@ -10,6 +10,7 @@ interface ForecastMatch {
   eventId?: number;
   homeTeamName?: string;
   awayTeamName?: string;
+  odds?: [number, number, number];
 }
 
 interface ForecastTeamData {
@@ -303,8 +304,6 @@ function scoreLabel(score: Score): string {
   return `${score.home}–${score.away}`;
 }
 
-const H2H_DISPLAY_LIMIT = 6;
-
 function normalizeTeamName(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
@@ -390,7 +389,7 @@ function collectH2H(
 
   return [...unique.values()]
     .sort((a, b) => (a.date ?? 0) - (b.date ?? 0))
-    .slice(-H2H_DISPLAY_LIMIT);
+    .slice(-6);
 }
 
 function fixtureOrientedScore(match: ForecastMatch, fixture: ForecastFixture): Score {
@@ -440,10 +439,17 @@ function analyzeConvergence(
   away: ForecastTeamData,
   fixture: ForecastFixture,
   forecast: Forecast,
+  directH2H: ForecastMatch[] = [],
 ): ConvergenceAnalysis {
   const homeTimeline = chronologicalTimeline(home);
   const awayTimeline = chronologicalTimeline(away);
-  const h2h = collectH2H(homeTimeline, awayTimeline, fixture);
+  const directMatches = directH2H
+    .filter(validMatch)
+    .filter(match => matchesSamePair(match, fixture.homeTeam.name, fixture.awayTeam.name));
+  const h2h = directMatches.length
+    ? [...new Map(directMatches.map(match => [h2hMatchKey(match), match])).values()]
+      .sort((a, b) => (a.date ?? 0) - (b.date ?? 0))
+    : collectH2H(homeTimeline, awayTimeline, fixture);
   const homeDrought = currentScoringDrought(homeTimeline);
   const awayDrought = currentScoringDrought(awayTimeline);
   const homeVenueMatches = home.matches.filter(match => match.isHome && validMatch(match));
@@ -625,13 +631,14 @@ function TimelineLog({ title, timeline, color }: { title: string; timeline: Fore
   );
 }
 
-function ConvergenceSieveSection({ home, away, fixture, forecast }: {
+function ConvergenceSieveSection({ home, away, fixture, forecast, directH2H }: {
   home: ForecastTeamData;
   away: ForecastTeamData;
   fixture: ForecastFixture;
   forecast: Forecast;
+  directH2H?: ForecastMatch[];
 }) {
-  const analysis = analyzeConvergence(home, away, fixture, forecast);
+  const analysis = analyzeConvergence(home, away, fixture, forecast, directH2H);
   const homeColor = fixture.homeTeam.colorPrimary ?? "#22d3ee";
   const awayColor = fixture.awayTeam.colorPrimary ?? "#f97316";
 
@@ -661,12 +668,13 @@ function ConvergenceSieveSection({ home, away, fixture, forecast }: {
       </div>
 
       <div className="border border-border/20 bg-card/20 p-3">
-        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">Head-to-Head Historical Friction · latest {H2H_DISPLAY_LIMIT}</div>
+         <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 mb-2">Head-to-Head Historical Friction · {analysis.h2h.length} meetings with results + odds</div>
         {analysis.h2h.length ? (
-          <div className="flex flex-wrap gap-1.5">
+           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-96 overflow-y-auto pr-1">
             {analysis.h2h.map((match, index) => (
               <span key={`${match.eventId ?? index}-${match.date ?? index}`} className="border border-purple-500/25 px-2 py-1 text-[10px] font-mono text-purple-200/80">
-                {index + 1}. {scoreLabel(fixtureOrientedScore(match, fixture))}
+                 {index + 1}. {scoreLabel(fixtureOrientedScore(match, fixture))}
+                 {match.odds && <span className="text-muted-foreground/50"> · {match.odds.map(odd => odd.toFixed(2)).join(" / ")}</span>}
               </span>
             ))}
           </div>
@@ -739,10 +747,11 @@ function ConvergenceSieveSection({ home, away, fixture, forecast }: {
   );
 }
 
-export default function ThreeLayerForecastPanel({ home, away, fixture }: {
+export default function ThreeLayerForecastPanel({ home, away, fixture, h2hMatches = [] }: {
   home: ForecastTeamData;
   away: ForecastTeamData;
   fixture: ForecastFixture;
+  h2hMatches?: ForecastMatch[];
 }) {
   const result = calculateForecast(home, away);
   const homeColor = fixture.homeTeam.colorPrimary ?? "#22d3ee";
@@ -891,7 +900,13 @@ export default function ThreeLayerForecastPanel({ home, away, fixture }: {
         </div>
       </div>
 
-      <ConvergenceSieveSection home={home} away={away} fixture={fixture} forecast={result} />
+      <ConvergenceSieveSection
+        home={home}
+        away={away}
+        fixture={fixture}
+        forecast={result}
+        directH2H={h2hMatches}
+      />
     </motion.div>
   );
 }
